@@ -975,10 +975,10 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     if (!found) return Promise.reject({ error: "NOT_FOUND", message: "Problem not found." });
     const p = found.problem;
     const qindex = store.round2.problem_ids.indexOf(p.id);
-    if (qindex !== store.round2.current_index) {
+    if (qindex > store.round2.current_index) {
       return Promise.reject({
         error: "LOCKED",
-        message: "This question is locked — finish the current question first (strict order Q1 → Q2 → Q3).",
+        message: "This question isn't open yet — finish the current question first (strict order Q1 → Q2 → Q3).",
       });
     }
     const draft = store.drafts[p.id] ?? { language: "python", languages: { python: GENERIC_STARTERS.python }, source_code: "" };
@@ -1174,10 +1174,11 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     };
     store.submissions.unshift(submission);
 
-    /* Strict order: any verdict still moves the pointer to the next dealt
-     * question; submitting Q3 completes the session. */
+    /* Strict order with a progress gate: the pointer only advances when the
+     * submission is accepted OR passes at least one hidden test case. A fully
+     * wrong submission keeps the participant on the same question. */
     const qindex = store.round2.problem_ids.indexOf(body.problem_id);
-    if (qindex >= 0 && qindex === store.round2.current_index) {
+    if (qindex >= 0 && qindex === store.round2.current_index && (verdict === "accepted" || passed > 0)) {
       const prev = store.round2.solved[body.problem_id] ?? 0;
       store.round2.solved[body.problem_id] = Math.max(prev, submission.score);
       store.round2.current_index += 1;

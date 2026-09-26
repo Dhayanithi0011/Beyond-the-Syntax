@@ -22,8 +22,6 @@ const ROUND2_GUARD_CODES = new Set([
   "SESSION_EXPIRED",
 ]);
 
-const TAB_SWITCH_EXEMPT_CODES = new Set(["720323243013"]);
-
 type ProblemMeta = { id: string; title: string; position: number; q_number?: number; domain?: string; difficulty?: string; max_score: number; solved: boolean; score: number; unlocked: boolean; attempted?: boolean };
 type ProblemDetail = {
   id: string;
@@ -193,7 +191,7 @@ export default function CodingWorkspacePage() {
   };
 
   const runCode = async () => {
-    if (!activeId) return;
+    if (!activeId || viewOnly) return;
     setRunning(true);
     setConsole(null);
     try {
@@ -225,7 +223,7 @@ export default function CodingWorkspacePage() {
   };
 
   const submitCode = async () => {
-    if (!activeId) return;
+    if (!activeId || viewOnly) return;
     setSubmitting(true);
     try {
       const { data } = await api.post("/coding/submit", {
@@ -302,9 +300,11 @@ export default function CodingWorkspacePage() {
   }, [deadlineMs, session?.deadline, toast]);
 
   const openCount = problems.filter((p) => p.solved).length;
-  const openLabel = session ? `${session.current_index}/${(session.total_questions || problems.length || 3)} solved` : `${openCount} solved`;
+  const openLabel = session ? `${session.current_index}/${session.total_questions || problems.length || 3} cleared` : `${openCount} cleared`;
   const headerName = participant?.name ?? "Participant";
   const headerCode = participant?.participant_code ? ` · ${participant.participant_code}` : "";
+  const activeProblem = problems.find((p) => p.id === activeId);
+  const viewOnly = !!activeProblem?.attempted;
 
   return (
     <div className="flex h-screen flex-col">
@@ -371,24 +371,29 @@ export default function CodingWorkspacePage() {
                     key={p.id}
                     disabled={locked}
                     title={
-                      done
-                        ? "Submitted — your next question is open."
-                        : locked
-                          ? "Locked — submit the earlier question to open this one."
-                          : "Open problem"
+                      locked
+                        ? "Locked — submit the earlier question to open this one."
+                        : p.solved
+                          ? "Solved — view this question"
+                          : done
+                            ? "Submitted — view this question"
+                            : "Open problem"
                     }
                     onClick={() => loadProblem(p.id)}
                     className={`flex min-w-max items-center gap-2 rounded-lg px-3 py-2.5 text-left transition-colors lg:min-w-0 ${
                       p.id === activeId
                         ? "bg-primary/15 text-primary"
-                        : locked || done
+                        : locked
                           ? "cursor-not-allowed opacity-40"
                           : "text-muted hover:bg-soft hover:text-text"
                     }`}
                   >
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${p.solved ? "bg-success" : done ? "bg-line/60" : locked ? "bg-line/60" : "bg-line"}`} aria-hidden />
-                    <span className={`text-sm font-medium ${p.solved || done ? "line-through decoration-ink/30" : ""}`}>
-                      {p.solved ? "✓ " : done ? "✓ " : locked ? "🔒 " : ""}Q{p.q_number ?? p.position}· {p.title}
+                    <span
+                      className={`h-2 w-2 shrink-0 rounded-full ${p.solved ? "bg-success" : locked ? "bg-line/60" : done ? "bg-warning/70" : "bg-line"}`}
+                      aria-hidden
+                    />
+                    <span className={`text-sm font-medium ${p.solved ? "text-success line-through decoration-success" : ""}`}>
+                      {p.solved ? "✓ " : locked ? "🔒 " : done ? "✓ " : ""}Q{p.q_number ?? p.position}· {p.title}
                     </span>
                     {p.difficulty && <span className="ml-auto rounded border border-line bg-soft px-1 text-[10px] text-muted">{p.difficulty}</span>}
                     {p.score > 0 && <span className="ml-auto font-mono text-xs text-success">{p.score}</span>}
@@ -397,8 +402,8 @@ export default function CodingWorkspacePage() {
               })}
             </div>
             <div className="mt-4 hidden rounded-lg border border-line bg-soft p-3 text-xs text-muted lg:block">
-              <p>The three dealt problems open in strict order — Q1 first, then Q2 after submitting Q1, then Q3.</p>
-              <p className="mt-2">Submitting moves you to the next question either way — a question can't be re-submitted once you leave it. The single shared timer covers all three.</p>
+              <p>The three dealt problems open in strict order — Q1 first, then Q2, then Q3. The next question only opens once you submit the current one correctly, or pass at least one hidden test case.</p>
+              <p className="mt-2">Solved questions are struck through and stay viewable (read-only). A question you moved past is permanently locked for editing. The single shared timer covers all three.</p>
             </div>
           </div>
         </aside>
@@ -474,6 +479,11 @@ export default function CodingWorkspacePage() {
               <span className="hidden sm:block text-[10px] font-medium uppercase tracking-widest text-muted">
                 {LANG_FULL[current.language]} · Source code
               </span>
+              {viewOnly && (
+                <span className="rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warning">
+                  Read-only — already submitted
+                </span>
+              )}
               <div className="ml-auto flex items-center gap-2">
                 <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">
                   Language
@@ -481,6 +491,7 @@ export default function CodingWorkspacePage() {
                     className="input w-auto py-1 text-[11px] font-normal normal-case tracking-normal"
                     value={current.language}
                     onChange={(e) => changeLanguage(e.target.value as Language)}
+                    disabled={viewOnly}
                     aria-label="Select language"
                   >
                     {LANGUAGES.map((l) => (
@@ -497,6 +508,7 @@ export default function CodingWorkspacePage() {
                 code={current.source_code}
                 onChange={onCodeChange}
                 fileName={detail?.title ?? "main"}
+                readOnly={viewOnly}
               />
             </div>
 
@@ -551,14 +563,14 @@ export default function CodingWorkspacePage() {
       {/* Toolbar */}
       <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line bg-surface/80 px-3 py-2.5">
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <button className="btn-secondary text-xs" onClick={manualSave} disabled={saveState === "saving" || !activeId}>
+          <button className="btn-secondary text-xs" onClick={manualSave} disabled={saveState === "saving" || !activeId || viewOnly}>
             {saveState === "saving" ? "Saving…" : "Save"}
           </button>
-          <button className="btn-primary text-xs" onClick={runCode} disabled={running || !activeId}>
-            {running ? "Running…" : "▶ Run Code"}
+          <button className="btn-primary text-xs" onClick={runCode} disabled={running || !activeId || viewOnly}>
+            {running ? "Running…" : viewOnly ? "View only" : "▶ Run Code"}
           </button>
-          <button className="btn-success text-xs" onClick={submitCode} disabled={submitting || !activeId}>
-            {submitting ? "Submitting…" : "Submit"}
+          <button className="btn-success text-xs" onClick={submitCode} disabled={submitting || !activeId || viewOnly}>
+            {submitting ? "Submitting…" : viewOnly ? "Locked" : "Submit"}
           </button>
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
           <button className="btn-secondary border-danger/30 text-danger hover:bg-danger/10 text-xs" onClick={() => setCompleteOpen(true)} disabled={completing}>
@@ -607,9 +619,7 @@ export default function CodingWorkspacePage() {
         )}
       </Modal>
 
-      {!TAB_SWITCH_EXEMPT_CODES.has(participant?.participant_code ?? "") && (
-        <TabSwitchWatcher context="the Round 2 coding sprint" notifyUrl="/coding/tab-switch" />
-      )}
+      <TabSwitchWatcher context="the Round 2 coding sprint" notifyUrl="/coding/tab-switch" />
     </div>
   );
 }
@@ -619,11 +629,13 @@ function EditorWrapper({
   code,
   onChange,
   fileName,
+  readOnly = false,
 }: {
   language: Language;
   code: string;
   onChange: (value?: string) => void;
   fileName: string;
+  readOnly?: boolean;
 }) {
   return (
     <Editor
@@ -643,6 +655,7 @@ function EditorWrapper({
         padding: { top: 12 },
         renderLineHighlight: "all",
         scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+        readOnly,
       }}
     />
   );

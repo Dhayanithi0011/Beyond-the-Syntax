@@ -78,6 +78,23 @@ def _assert_current_problem(db: AsyncSession, session: Round2Session, problem: C
         )
 
 
+def _assert_viewable_problem(db: AsyncSession, session: Round2Session, problem: CodingProblem | None) -> None:
+    """Read-only gate for `GET /coding/problems/{id}`: the current question and
+    every previously submitted question are viewable (statement + results), but
+    questions further ahead in the strict order stay sealed."""
+    if problem is None:
+        raise AuthError("NOT_FOUND", "Problem not found.", 404)
+    dealt = round2_service.dealt_problem_ids(session)
+    if str(problem.id) not in dealt:
+        raise AuthError("FORBIDDEN", "That question isn't part of your dealt Round 2 set.")
+    qindex = dealt.index(str(problem.id))
+    if qindex > (session.current_index or 0):
+        raise AuthError(
+            "LOCKED",
+            "This question isn't open yet — finish the current question first (strict order Q1 → Q2 → Q3).",
+        )
+
+
 async def _solved_map(db: AsyncSession, participant_id, problem_ids: list) -> dict:
     """{problem_id: best_score} for the given problems — score > 0 means the
     participant has an accepted submission on it."""
@@ -144,7 +161,7 @@ async def get_problem(
     problem_id: str, db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)
 ):
     problem = await db.get(CodingProblem, problem_id)
-    _assert_current_problem(db, session, problem)
+    _assert_viewable_problem(db, session, problem)
     samples = (
         await db.scalars(
             select(TestCase).where(
@@ -319,9 +336,14 @@ async def submit_code(
     db.add(submission)
     await db.commit()
 
-    # Strict order: an accepted-or-not verdict still moves the pointer to the
-    # next dealt question; submitting Q3 completes the session.
-    await round2_service.advance(db, session)
+    # Strict order with a progress gate: the pointer only advances when the
+    # submission is accepted OR passes at least one hidden test case. A fully
+    # wrong submission keeps the participant on the same question so they can
+    # keep fixing it; submitting Q3 (and passing the gate) completes the round.
+    prev_index = session.current_index or 0
+    if verdict == "accepted" or passed > 0:
+        await round2_service.advance(db, session)
+    advanced = (session.status == "completed") or (session.current_index or 0) != prev_index
     await log_action(
         db,
         user_id=session.participant.user_id,
@@ -342,6 +364,7 @@ async def submit_code(
         "execution_time_ms": worst_time,
         "memory_kb": worst_mem,
         "judge": "real",
+        "advanced": advanced,
         "completed": (session.status == "completed"),
         "current_index": session.current_index,
     }
