@@ -131,7 +131,8 @@ async def list_problems(db: AsyncSession = Depends(get_db), session=Depends(requ
                 "max_score": p.max_score,
                 "solved": best.get(str(p.id), 0) > 0,
                 "score": best.get(str(p.id), 0),
-                "unlocked": index <= session.current_index,
+                "unlocked": index == session.current_index,
+                "attempted": index < (session.current_index or 0),
             }
             for index, p in enumerate(dealt)
         ],

@@ -929,6 +929,9 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     return respond({ completed: true, message: "Round 2 complete — your remaining time has ended here." });
   }
   if (url === "/coding/problems" && method === "get") {
+    if (store.round2.status === "completed") {
+      return Promise.reject({ error: "ROUND2_COMPLETED", message: "You have already completed Round 2." });
+    }
     const s = store.round2;
     const problems = s.problem_ids.map((pid, i) => {
       const found = findProblem(pid)!;
@@ -945,7 +948,8 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
         max_score: p.max_score,
         solved: score > 0,
         score,
-        unlocked: i <= s.current_index,
+        unlocked: i === s.current_index,
+        attempted: i < s.current_index,
       };
     });
     return respond({
@@ -970,6 +974,13 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     const found = findProblem(problemMatch[1]);
     if (!found) return Promise.reject({ error: "NOT_FOUND", message: "Problem not found." });
     const p = found.problem;
+    const qindex = store.round2.problem_ids.indexOf(p.id);
+    if (qindex !== store.round2.current_index) {
+      return Promise.reject({
+        error: "LOCKED",
+        message: "This question is locked — finish the current question first (strict order Q1 → Q2 → Q3).",
+      });
+    }
     const draft = store.drafts[p.id] ?? { language: "python", languages: { python: GENERIC_STARTERS.python }, source_code: "" };
     return respond({
       problem: {

@@ -24,7 +24,7 @@ const ROUND2_GUARD_CODES = new Set([
 
 const TAB_SWITCH_EXEMPT_CODES = new Set(["720323243013"]);
 
-type ProblemMeta = { id: string; title: string; position: number; q_number?: number; domain?: string; difficulty?: string; max_score: number; solved: boolean; score: number; unlocked: boolean };
+type ProblemMeta = { id: string; title: string; position: number; q_number?: number; domain?: string; difficulty?: string; max_score: number; solved: boolean; score: number; unlocked: boolean; attempted?: boolean };
 type ProblemDetail = {
   id: string;
   title: string;
@@ -260,7 +260,7 @@ export default function CodingWorkspacePage() {
         return;
       }
       const problemsNow = fresh?.problems?.length ? fresh.problems : problems;
-      const next = problemsNow.find((p: ProblemMeta) => p.unlocked && !p.solved);
+      const next = problemsNow.find((p: ProblemMeta) => p.unlocked);
       if (next && next.id !== activeId) loadProblem(next.id);
     } catch (e) {
       const err = e as { code?: string; message?: string };
@@ -364,24 +364,31 @@ export default function CodingWorkspacePage() {
             </p>
             <div className="flex gap-2 lg:flex-col lg:gap-1.5">
               {problems.map((p) => {
-                const locked = !p.unlocked;
+                const done = p.attempted || p.solved;
+                const locked = !p.unlocked && !done;
                 return (
                   <button
                     key={p.id}
                     disabled={locked}
-                    title={locked ? "Locked — submit the earlier question to open this one." : "Open problem"}
+                    title={
+                      done
+                        ? "Submitted — your next question is open."
+                        : locked
+                          ? "Locked — submit the earlier question to open this one."
+                          : "Open problem"
+                    }
                     onClick={() => loadProblem(p.id)}
                     className={`flex min-w-max items-center gap-2 rounded-lg px-3 py-2.5 text-left transition-colors lg:min-w-0 ${
                       p.id === activeId
                         ? "bg-primary/15 text-primary"
-                        : locked
+                        : locked || done
                           ? "cursor-not-allowed opacity-40"
                           : "text-muted hover:bg-soft hover:text-text"
                     }`}
                   >
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${p.solved ? "bg-success" : locked ? "bg-line/60" : "bg-line"}`} aria-hidden />
-                    <span className={`text-sm font-medium ${p.solved ? "text-success line-through decoration-success" : ""}`}>
-                      {p.solved ? "✓ " : ""}Q{p.q_number ?? p.position}· {p.title} {locked ? "🔒" : ""}
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${p.solved ? "bg-success" : done ? "bg-line/60" : locked ? "bg-line/60" : "bg-line"}`} aria-hidden />
+                    <span className={`text-sm font-medium ${p.solved || done ? "line-through decoration-ink/30" : ""}`}>
+                      {p.solved ? "✓ " : done ? "✓ " : locked ? "🔒 " : ""}Q{p.q_number ?? p.position}· {p.title}
                     </span>
                     {p.difficulty && <span className="ml-auto rounded border border-line bg-soft px-1 text-[10px] text-muted">{p.difficulty}</span>}
                     {p.score > 0 && <span className="ml-auto font-mono text-xs text-success">{p.score}</span>}
