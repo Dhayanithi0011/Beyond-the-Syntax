@@ -107,19 +107,18 @@ docker compose up --build
 
 One Vercel project serves BOTH the static frontend and the FastAPI backend, so
 the site and the API share a single origin and no CORS/API-URL wiring is needed.
-The layout:
+Because Vercel's Python runtime auto-detects FastAPI and serves the whole
+project from one function (mounting it under `/api`), the function itself serves
+the React app for every non-API path and normalizes paths back to the app's
+registered `/api/v1/...` routes. The layout:
 
-- `vercel.json` (root) — build + output + rewrites
-- `api/index.py` (root) — Mangum handler wrapping `backend/app/main.py`
+- `vercel.json` (root) — builds `frontend/dist`, routes every request to the function
+- `api/index.py` (root) — FastAPI app with a path-normalizing middleware, SPA
+  serving from `frontend/dist`, plus a `Mangum` handler
 - `requirements.txt` (root) — backend deps + `mangum`
 
-The build runs `npm ci && vite build` in `frontend/` and uploads
-`frontend/dist` as static output; every `/api/*` request is rewritten to the
-serverless function, which hands the preserved path back to FastAPI. Anything
-else falls through to `/index.html` (SPA routing).
-
-1. Create a Vercel project pointing at the repo root. Push to GitHub and hit
-   "Deploy" — no framework preset needed, `vercel.json` drives the build.
+1. Push the repo to GitHub, import it into Vercel with **Root Directory `/`**,
+   and deploy — no framework preset needed.
 
 2. In the project's **Settings → Environment Variables** (Production):
 
@@ -156,7 +155,8 @@ Caveats of the serverless setup:
   frontend currently polls, so nothing breaks.
 - Migrations are NOT auto-applied here — run them once (e.g.
   `alembic upgrade head` from `backend/` against the production DB before or
-  after the first deploy).
+  after the first deploy), and remember `frontend/dist` is only built in CI, so
+  changing backend code requires a redeploy of the frontend too.
 
 ### Option B — Docker
 
