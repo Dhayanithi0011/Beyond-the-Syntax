@@ -42,8 +42,10 @@ export default function Round2Page() {
   const [loading, setLoading] = useState(true);
   const [startOpen, setStartOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
+  const [timersOpen, setTimersOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resetId, setResetId] = useState<string | null>(null);
+  const [timerId, setTimerId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -103,6 +105,33 @@ export default function Round2Page() {
     }
   };
 
+  const resetTimers = async () => {
+    setTimersOpen(false);
+    setBusy(true);
+    try {
+      const { data } = await api.post("/admin/round2/reset-timers", {});
+      toast.success(`Restarted the timer for ${data.restarted} participant${data.restarted === 1 ? "" : "s"} — a fresh ${mins}-minute window.`);
+      load();
+    } catch (e) {
+      toast.error((e as { message?: string }).message || "Could not reset timers.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetOneTimer = async (id: string) => {
+    setTimerId(id);
+    try {
+      const { data } = await api.post(`/admin/round2/${id}/timer`, {});
+      toast.success(`Restarted ${data.restarted} timer — a fresh ${mins}-minute window.`);
+      load();
+    } catch (e) {
+      toast.error((e as { message?: string }).message || "Timer reset failed.");
+    } finally {
+      setTimerId(null);
+    }
+  };
+
   const active = data?.competition_state === "round2_active";
   const mins = Math.round((data?.round2_duration_seconds ?? 2700) / 60);
   const counts = data?.sessions.reduce(
@@ -122,9 +151,14 @@ export default function Round2Page() {
         actions={
           <>
             {active ? (
-              <button className="btn-secondary border-danger/30 text-danger hover:bg-danger/10" onClick={() => setCloseOpen(true)}>
-                Close Round 2
-              </button>
+              <div className="flex items-center gap-2">
+                <button className="btn-secondary" onClick={() => setTimersOpen(true)}>
+                  ⏱ Restart all timers
+                </button>
+                <button className="btn-secondary border-danger/30 text-danger hover:bg-danger/10" onClick={() => setCloseOpen(true)}>
+                  Close Round 2
+                </button>
+              </div>
             ) : (
               <button className="btn-primary" onClick={() => setStartOpen(true)}>
                 Start Round 2
@@ -204,6 +238,13 @@ export default function Round2Page() {
                           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
                           <button
                             className="btn-secondary px-2 py-1 text-[11px]"
+                            disabled={timerId === s.id}
+                            onClick={() => resetOneTimer(s.id)}
+                          >
+                            {timerId === s.id ? "Restarting…" : "Restart timer"}
+                          </button>
+                          <button
+                            className="btn-secondary px-2 py-1 text-[11px]"
                             disabled={resetId === s.id}
                             onClick={() => resetSession(s.id)}
                           >
@@ -233,7 +274,7 @@ export default function Round2Page() {
           )}
 
           <p className="mt-5 text-center text-[11px] text-muted">
-            Dealt serverside: Q1 → Q2 → Q3 in strict order against a single {mins}-minute shared timer. Reset re-deals from the shuffle deck.
+            Dealt serverside: Q1 → Q2 → Q3 in strict order against a single {mins}-minute shared timer. "Restart timer" refills the clock without re-dealing; "Reset deal" re-deals Q1–Q3 from the shuffle deck and restarts the clock.
           </p>
         </>
       )}
@@ -255,6 +296,25 @@ export default function Round2Page() {
           Those already in a live session keep theirs.
         </p>
         <p className="mt-2 text-sm text-muted">Problems are dealt from the shuffle deck — no one can preview them before launch.</p>
+      </Modal>
+
+      {/* Restart timers confirm */}
+      <Modal
+        open={timersOpen}
+        onClose={() => setTimersOpen(false)}
+        title="Restart every participant's timer?"
+        footer={
+          <>
+            <button className="btn-secondary" onClick={() => setTimersOpen(false)}>Cancel</button>
+            <button className="btn-secondary border-warning/40 text-warning hover:bg-warning/10" onClick={resetTimers} disabled={busy}>{busy ? "Restarting…" : "Yes, give everyone a fresh timer"}</button>
+          </>
+        }
+      >
+        <p className="text-sm">
+          Every participant still working (in progress or expired) gets a brand-new {mins}-minute window, all starting now.
+          Their dealt problems and progress are untouched.
+        </p>
+        <p className="mt-2 text-sm text-warning">Anyone who already completed Round 2 keeps their result — completed sessions are not re-opened.</p>
       </Modal>
 
       {/* Close confirm */}

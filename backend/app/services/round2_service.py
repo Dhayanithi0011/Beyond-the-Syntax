@@ -172,6 +172,32 @@ async def start_round2(db: AsyncSession, competition_id, *, reopen_existing: boo
     return {"dealt": dealt, "total_sessions": len(participant_ids), "deadline": deadline.isoformat()}
 
 
+async def restart_timers(db: AsyncSession, competition_id, *, session_ids: list[str] | None = None) -> dict:
+    """Restarts the Round-2 clock WITHOUT re-dealing problems or touching any
+    participant's progress. Every running session (active or expired) gets a
+    fresh shared deadline = now + total duration. Completed sessions are left
+    alone. This is the admin's "give everyone more time" override."""
+    competition = await db.get(Competition, competition_id)
+    total = round2_total_seconds(competition)
+    now = utcnow()
+    deadline = now + timedelta(seconds=total)
+
+    query = select(Round2Session).where(Round2Session.competition_id == competition_id)
+    if session_ids:
+        query = query.where(Round2Session.id.in_(session_ids))
+    candidates = (await db.scalars(query)).all()
+    sessions = [
+        s for s in candidates
+        if s.status in (SessionStatus.active, SessionStatus.expired)
+    ]
+    for session in sessions:
+        session.started_at = now
+        session.deadline = deadline
+        session.status = SessionStatus.active
+    await db.commit()
+    return {"restarted": len(sessions), "deadline": deadline.isoformat()}
+
+
 async def reset_session(db: AsyncSession, session: Round2Session, competition_id) -> None:
     """Re-deals a single participant a fresh 3-problem set and restarts their clock."""
     from app.models.models import CodeDraft, Submission  # local import avoids top-level cycle cost

@@ -431,6 +431,32 @@ async def reset_round2_session(session_id: str, db: AsyncSession = Depends(get_d
     return {"reset": True, "status": _value(session.status)}
 
 
+@router.post("/round2/reset-timers")
+async def reset_all_round2_timers(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    """Restarts the shared Round-2 clock for every running participant (active
+    or expired) without re-dealing problems or touching progress. Completed
+    sessions are left untouched."""
+    comp = await _active_competition(db)
+    result = await round2_service.restart_timers(db, comp.id)
+    await log_action(
+        db, user_id=admin.user_id, action="ROUND2_TIMERS_RESET",
+        metadata={"restarted": result["restarted"], "deadline": result["deadline"]},
+    )
+    return result
+
+
+@router.post("/round2/{session_id}/timer")
+async def reset_round2_session_timer(session_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    """Restarts the clock for ONE participant only, keeping their current deal
+    and progress (admin override when a single person lost time)."""
+    session = await db.get(Round2Session, session_id)
+    if session is None:
+        raise AuthError("NOT_FOUND", "Round 2 session not found", 404)
+    result = await round2_service.restart_timers(db, session.competition_id, session_ids=[session_id])
+    await log_action(db, user_id=admin.user_id, action="ROUND2_SESSION_TIMER_RESET", metadata={"session_id": session_id})
+    return result
+
+
 @router.post("/round2/close")
 async def close_round2(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
     """Locks the coding workspace for everyone immediately (any running sessions

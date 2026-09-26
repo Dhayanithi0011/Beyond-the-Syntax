@@ -1316,6 +1316,26 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
   if (/^\/admin\/round2\/([\w-]+)\/reset$/.test(url) && method === "post") {
     return respond({ reset: true, status: "active" });
   }
+  if (url === "/admin/round2/reset-timers" && method === "post") {
+    const running = (store.rounds2 as any[]).filter((s) => s.status === "active" || s.status === "expired");
+    store.round2.deadline = new Date(Date.now() + (store.competition.round2_team_duration_seconds || 2700) * 1000).toISOString();
+    running.forEach((s) => {
+      s.status = "active";
+      s.deadline = store.round2.deadline;
+      s.started_at = new Date().toISOString();
+    });
+    return respond({ restarted: running.length, deadline: store.round2.deadline });
+  }
+  if (/^\/admin\/round2\/([\w-]+)\/timer$/.test(url) && method === "post") {
+    const sid = url.split("/")[4];
+    const s = (store.rounds2 as any[]).find((x) => x.id === sid);
+    if (s) {
+      s.status = "active";
+      s.deadline = store.round2.deadline;
+      s.started_at = new Date().toISOString();
+    }
+    return respond({ restarted: s ? 1 : 0, deadline: store.round2.deadline });
+  }
   if (url === "/admin/live" && method === "get") {
     const sessions = (store.rounds2 as any[]).filter((s) => s.status === "active" || s.status === "completed" || s.status === "expired");
     return respond({
