@@ -28,8 +28,12 @@ if (isDemoMode) {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    const code = err?.response?.data?.error ?? err?.error ?? "UNKNOWN_ERROR";
-    const message = err?.response?.data?.message ?? err?.message ?? "Something went wrong.";
+    // FastAPI wraps HTTPException detail as { detail: { error, message } };
+    // also tolerate flat { error, message } bodies.
+    const data = err?.response?.data;
+    const body = data?.detail && typeof data.detail === "object" ? data.detail : data ?? {};
+    const code = body.error ?? "UNKNOWN_ERROR";
+    const message = body.message ?? err?.message ?? "Something went wrong.";
     return Promise.reject({ code, message, raw: err });
   }
 );

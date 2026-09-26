@@ -84,6 +84,13 @@ const isThrottled = (err: any) =>
 const throttleMessage =
   "The sign-in/sign-up service is temporarily throttling this connection (too many attempts). Please wait a few minutes and try again.";
 
+const loginErrorMessage = (err: any) => {
+  if (isThrottled(err)) return throttleMessage;
+  if (err?.code === "NOT_FOUND") return "No account found with that email, register number, or phone — check the ID or register first.";
+  if (err?.code === "INVALID_CREDENTIALS") return "Incorrect password. Please try again.";
+  return err?.message ?? "Something went wrong. Please try again.";
+};
+
 export default function AuthPage() {
   const navigate = useNavigate();
   const toast = useToast();
@@ -144,7 +151,7 @@ export default function AuthPage() {
       // Route by the backend-resolved role — admin -> /admin, participant -> /quiz.
       navigate(data.user.role === "admin" ? "/admin" : "/quiz");
     } catch (err: any) {
-      toast.error(isThrottled(err) ? throttleMessage : err?.message ?? "Invalid email, register number, or password.");
+      toast.error(loginErrorMessage(err));
       setLoading(false);
     }
   };
@@ -234,7 +241,7 @@ export default function AuthPage() {
         toast.success(`Welcome, ${form.name}! You can now take Round 1.`);
         navigate("/quiz");
       } else if (err?.code === "ALREADY_REGISTERED") {
-        toast.error("An account already exists for that email or register number — sign in instead.");
+        toast.error("This email, register number, or phone is already registered — sign in instead.");
         setTab("login");
         setIdentifier(fallbackEmail);
       } else {

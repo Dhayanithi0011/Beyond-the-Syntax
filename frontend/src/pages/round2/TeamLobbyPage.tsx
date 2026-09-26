@@ -217,6 +217,62 @@ export default function TeamLobbyPage() {
   }
 
   /* ------------------------------------------------------------------ */
+  /* Round 2 finished — completed early or the time ran out               */
+  /* ------------------------------------------------------------------ */
+  if (status.team.status === "completed" || status.team.status === "expired") {
+    const team = status.team;
+    const yourCode = status.your_participant_code;
+    const finished = status.team.status === "completed";
+    return (
+      <section className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
+        <div className="card overflow-hidden animate-fade-in">
+          <div className="flex items-center gap-4 border-b border-line p-7">
+            <span
+              className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl text-2xl"
+              style={{ background: `${team.color}1f`, color: team.color }}
+              aria-hidden
+            >
+              {finished ? "✓" : "⏳"}
+            </span>
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-semibold tracking-tight" style={{ color: team.color }}>{team.name}</h1>
+              <StatusBadge status={finished ? "completed" : "expired"} />
+            </div>
+          </div>
+          <div className="p-7">
+            <p className="mb-4 text-sm font-semibold text-muted">Relay order</p>
+            <div className="space-y-3">
+              {team.members.map((m) => {
+                const st = MEMBER_STATE[finished ? "completed" : "expired"] ?? MEMBER_STATE.not_started;
+                const isYou = m.participant_code === yourCode;
+                return (
+                  <div key={m.member_number} className="flex items-center gap-4">
+                    <span className="w-8 shrink-0 text-center font-mono text-sm text-muted">M{m.member_number}</span>
+                    <Avatar name={m.name} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {m.name} {isYou && <Badge tone="primary" className="ml-1">You</Badge>}
+                      </p>
+                      <p className="text-xs text-muted">{m.participant_code}</p>
+                    </div>
+                    <span className={`rounded-lg border px-3 py-1 text-xs font-medium ${st.cls}`}>{st.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className={`mt-7 rounded-xl border p-4 text-center text-sm ${finished ? "border-success/30 bg-success/10 text-success" : "border-warning/30 bg-warning/10 text-warning"}`}>
+              {finished
+                ? "Round 2 is complete — your team's solutions and scores are locked in."
+                : "Round 2 time has ended for your team."}
+            </div>
+            <button className="btn-secondary mt-6 w-full py-2.5" onClick={() => navigate("/")}>Back to home</button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Approved / live team — relay lobby with member states               */
   /* ------------------------------------------------------------------ */
   const team = status.team;

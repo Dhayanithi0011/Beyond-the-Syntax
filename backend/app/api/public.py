@@ -93,11 +93,12 @@ async def get_rules():
             {
                 "title": "Round 2 — Coding Relay",
                 "body": (
-                    "Qualified participants form teams of 3. Each member solves one problem in relay order "
-                    "within a shared team budget of 45 minutes. Each member gets a 15-minute turn that starts "
-                    "when they enter the workspace. The clock runs only while a member is working and pauses "
-                    "on handoff, so unused turn time rolls back into the team budget. Members may hand off "
-                    "early; the round ends when every member has used their turn or the budget runs out."
+                    "Qualified participants form teams of 3. The team shares a fixed 45 minutes — "
+                    "a 15-minute turn for each member, in relay order. A member's clock starts only "
+                    "when they enter the workspace and pauses in between turns. There is no time bank: "
+                    "any time left unused in a turn is discarded, so the team's remaining time steps "
+                    "down 45 → 30 → 15 as each turn is used. The final member cannot hand off. Teams "
+                    "that finish their work early may close the round ahead of time."
                 ),
             },
             {

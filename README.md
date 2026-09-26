@@ -103,6 +103,63 @@ docker compose up --build
 
 ## Production deployment
 
+### Option A — Vercel, single deployment (recommended)
+
+One Vercel project serves BOTH the static frontend and the FastAPI backend, so
+the site and the API share a single origin and no CORS/API-URL wiring is needed.
+The layout:
+
+- `vercel.json` (root) — build + output + rewrites
+- `api/index.py` (root) — Mangum handler wrapping `backend/app/main.py`
+- `requirements.txt` (root) — backend deps + `mangum`
+
+The build runs `npm ci && vite build` in `frontend/` and uploads
+`frontend/dist` as static output; every `/api/*` request is rewritten to the
+serverless function, which hands the preserved path back to FastAPI. Anything
+else falls through to `/index.html` (SPA routing).
+
+1. Create a Vercel project pointing at the repo root. Push to GitHub and hit
+   "Deploy" — no framework preset needed, `vercel.json` drives the build.
+
+2. In the project's **Settings → Environment Variables** (Production):
+
+   ```text
+   DATABASE_URL                Supabase pooler DSN (postgresql+asyncpg://...?ssl=require)
+   SUPABASE_URL
+   SUPABASE_ANON_KEY
+   SUPABASE_JWT_SECRET
+   SUPABASE_SERVICE_ROLE_KEY
+   CORS_ORIGINS                optional — same-origin, so not strictly needed
+   DEV_MODE=false              disables /admin/dev/* endpoints
+   VITE_SUPABASE_URL           baked into the frontend at build time
+   VITE_SUPABASE_ANON_KEY      baked into the frontend at build time
+   ```
+
+3. Provision the first admin (one-off, from your machine against the same DB):
+
+   ```bash
+   cd backend
+   python -m scripts.create_admin --email admin@college.edu --name "Admin Name"
+   ```
+
+   (Set the same env vars locally, or point `DATABASE_URL` at the production
+   Postgres.)
+
+4. Redeploy. The site is at `https://<project>.vercel.app` and the API at
+   `https://<project>.vercel.app/api/v1/...`.
+
+Caveats of the serverless setup:
+- Code execution is external (Piston) — each `Run`/`Submit` makes HTTP calls
+  inside the function. The Hobby plan caps function duration at 10s, which can
+  time out a 5-hidden-case submit; a Pro plan (60s+ `maxDuration`) is safer.
+- WebSockets (Phase 12) are not available on serverless functions; the
+  frontend currently polls, so nothing breaks.
+- Migrations are NOT auto-applied here — run them once (e.g.
+  `alembic upgrade head` from `backend/` against the production DB before or
+  after the first deploy).
+
+### Option B — Docker
+
 The frontend is a static SPA served by nginx, which also proxies `/api` and `/ws`
 to the backend. The backend runs its own migrations on startup and needs the
 `postgres` service, plus Supabase project credentials.
@@ -117,7 +174,6 @@ to the backend. The backend runs its own migrations on startup and needs the
    - `DATABASE_URL` — production Postgres (Supabase pooler or any PostgreSQL)
    - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`
    - `CORS_ORIGINS` — the public frontend origin(s)
-   - `EXECUTION_SERVICE_URL`
    - `DEV_MODE=false` — disables the `/admin/dev/*` endpoints
    - `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` — baked into the frontend bundle at build time
 
@@ -154,11 +210,11 @@ different origin than the frontend, override the base URL by setting
 
 ## Next steps (recommended order)
 
-1. **Execution service sandboxing** (Phase 10) — implement the actual
-   `docker run` logic in `execution/runners/service.py` against the Dockerfiles
-   in `execution/docker/`.
+1. **Execution grading** — the API already delegates `Run`/`Submit` to the
+   Piston remote judge (`execution_client.py`). For a self-hosted grade, swap
+   `execute_job`'s Piston branch for a Docker-isolated runner.
 2. **WebSocket push** (Phase 12) for timer/handoff/leaderboard events, replacing
-   polling in the frontend.
+   polling in the frontend. Note: not available on Vercel serverless functions.
 3. **Leaderboard computation** — a service that (re)populates the `leaderboards`
    table on quiz-submit / code-submit events, called from `quiz.py` and
    `coding.py`.

@@ -67,6 +67,7 @@ export default function PublicLayout() {
             <Link className="hover:text-text transition-colors" to="/auth">Sign in</Link>
           </div>
         </div>
+        <p className="mt-6 text-center text-xs text-muted/70">Developed by Dany 😎</p>
       </footer>
     </div>
   );

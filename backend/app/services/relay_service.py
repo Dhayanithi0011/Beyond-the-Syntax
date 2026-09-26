@@ -8,17 +8,19 @@ someone (participant or admin) looks at it — no reliance on a cron job being
 perfectly on time.
 
 Timing model (verified against product owner):
-  * The team budget is `round2_team_duration_seconds` (45 min) of ACTIVE time.
-    It does NOT start at admin approval. The first member's workspace entry
-    starts the clock; when that member hands off the clock FREEZES; the next
-    member's entry resumes it. Only time spent mid-turn accrues — this is
-    stored in `team_time_used_seconds` and never ticks while idle.
-  * Each member gets a nominal 15-minute slice (duration / 3). Their private
-    countdown starts lazily the first time the CURRENT member opens the coding
-    workspace (`ensure_member_clock`), capped by the team budget still left.
-  * Only the time a member actually USES is spent (`_accrue_usage`). An early
-    hand off keeps the unused remainder in the team budget — the next member
-    still enters with a fresh 15:00 of their own.
+  * The team budget is `round2_team_duration_seconds` (45 min) split into one
+    fixed 15-minute slice per member (duration / 3). It does NOT start at admin
+    approval. The CURRENT member's private countdown starts lazily the first
+    time they open the coding workspace (`ensure_member_clock`); in between
+    turns nothing ticks.
+  * There is NO time bank: a member's turn spends their ENTIRE slice from the
+    team budget whether they use it all or hand off early (`_consume_slice`).
+    Unused time is discarded, so the team total steps down 45 -> 30 -> 15 as
+    each turn is used. The last member cannot hand off and their remaining
+    time simply runs out.
+  * A team that finishes its work early can close the round by calling
+    `complete_team_round` (POST /coding/complete) — the whole budget is
+    consumed and the session is flagged `completed` immediately.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -29,23 +31,32 @@ from app.core.errors import AuthError
 from app.models.models import Team, TeamMember, TeamSession, SessionStatus, Competition
 
 
+TEAM_MEMBERS_COUNT = 3
+
+
 def budget_seconds(competition: Competition | None) -> int:
     return competition.round2_team_duration_seconds if competition and competition.round2_team_duration_seconds else 45 * 60
 
 
 def team_time_remaining(session: TeamSession, competition: Competition | None) -> int:
     """Seconds of active budget still unused. This is a STATIC snapshot — it
-    only drops when a turn actually runs, never while the relay is idle."""
+    only drops when a turn is completed (or the round is closed early), never
+    while the relay is idle."""
     return max(budget_seconds(competition) - (session.team_time_used_seconds or 0), 0)
 
 
-async def _accrue_usage(db: AsyncSession, session: TeamSession, now: datetime, budget: int, slice_seconds: int) -> bool:
-    """Fold the just-finished turn's usage into the team budget. Returns True
-    when the whole budget has been consumed (relay time is over)."""
-    started = session.member_started_at
-    used = int((now - started).total_seconds()) if started else 0
-    used = max(min(used, slice_seconds), 0)
-    session.team_time_used_seconds = min((session.team_time_used_seconds or 0) + used, budget)
+async def _consume_slice(session: TeamSession, budget: int, slice_seconds: int) -> bool:
+    """A member's turn spends their ENTIRE allocated slice from the team
+    budget. Any unused remainder is deliberately discarded — there is no time
+    bank (every member keeps a fixed 15:00 of their own). Returns True when the
+    whole budget has been consumed (relay time is over).
+
+    The ADMIN advance to member 1 (and any advance on a turn nobody ever
+    started) has no `member_deadline`, so it spends nothing — a slice is only
+    consumed after a member entered the workspace and their clock started."""
+    if session.member_deadline is None:
+        return (session.team_time_used_seconds or 0) >= budget
+    session.team_time_used_seconds = min((session.team_time_used_seconds or 0) + slice_seconds, budget)
     return (session.team_time_used_seconds or 0) >= budget
 
 
@@ -89,34 +100,51 @@ async def advance_to_next_member(db: AsyncSession, team_id: str, reason: str) ->
                 "Early handoff is disabled for this competition; wait for your timer to expire.",
                 409,
             )
+        if session.current_member_number == TEAM_MEMBERS_COUNT:
+            raise AuthError(
+                "LAST_MEMBER",
+                "You are the final member — there is no one to hand off to. Finish the round early or let your timer run out.",
+                409,
+            )
 
     await _advance_locked(db, session, reason=reason)
     return session
 
 
-async def _advance_locked(db: AsyncSession, session: TeamSession, reason: str):
-    """Moves the relay to the next member. The relay cycles round-robin:
-    member 3 hands back to member 1, incrementing `completed_rounds` so the
-    team's question-set advances — the next set starts only after a complete
-    full pass of all 3 members.
+async def complete_team_round(db: AsyncSession, session: TeamSession) -> TeamSession:
+    """Finish the team's Round 2 immediately (early completion). Consumes the
+    whole budget and flags the session `completed`, so no further turns can run
+    and any remaining time is discarded. Used by POST /coding/complete."""
+    team = await db.get(Team, session.team_id)
+    competition = await db.get(Competition, team.competition_id) if team else None
+    budget = budget_seconds(competition)
+    session.team_time_used_seconds = budget
+    session.member_started_at = None
+    session.member_deadline = None
+    session.status = SessionStatus.completed
+    await db.commit()
+    return session
 
-    The finished turn's actual usage is folded into `team_time_used_seconds`
-    (the team clock PAUSES here — nothing ticks while idle). The incoming
-    member then has no clock at all until they open the workspace
-    (`ensure_member_clock`). If the whole team budget is gone, the relay is
-    over.
+
+async def _advance_locked(db: AsyncSession, session: TeamSession, reason: str):
+    """Moves the relay to the next member. A turn always spends the member's
+    ENTIRE 15-minute slice (`_consume_slice`) — unused time is discarded, not
+    banked — so the team budget steps down by one full slice per turn. When the
+    whole budget is gone the relay is over.
+
+    The team clock PAUSES here (nothing ticks while idle): the incoming member
+    has no deadline until they open the workspace (`ensure_member_clock`).
     """
-    team_members_count = 3
     next_number = (session.current_member_number or 0) + 1
 
-    if next_number > team_members_count:
+    if next_number > TEAM_MEMBERS_COUNT:
         next_number = 1
         session.completed_rounds = (session.completed_rounds or 0) + 1
 
     team = await db.get(Team, session.team_id)
     competition = await db.get(Competition, team.competition_id) if team else None
-    slice_seconds = budget_seconds(competition) // team_members_count
-    exhausted = await _accrue_usage(db, session, datetime.now(timezone.utc), budget_seconds(competition), slice_seconds)
+    slice_seconds = budget_seconds(competition) // TEAM_MEMBERS_COUNT
+    exhausted = await _consume_slice(session, budget_seconds(competition), slice_seconds)
 
     session.current_member_number = next_number
     session.member_started_at = None
@@ -130,11 +158,12 @@ async def _advance_locked(db: AsyncSession, session: TeamSession, reason: str):
 
 async def ensure_member_clock(db: AsyncSession, session: TeamSession) -> TeamSession:
     """Lazily starts the CURRENT member's private countdown the first time they
-    enter the coding workspace. Until they show up, no personal timer runs, and
-    the team clock is frozen (usage only accrues mid-turn). The member slice is
-    their own 15 minutes capped by the team budget actually left — if that is
-    zero the relay is over. Re-entry is a no-op — the clock is never restarted
-    by a second page load."""
+    enter the coding workspace — the timer starts only on workspace entry, per
+    the product rule. Until they show up, no personal timer runs. The member
+    slice is their own fixed 15 minutes, capped by the team budget actually
+    left (which is always a multiple of the slice). If that is zero the relay
+    is over. Re-entry is a no-op — the clock is never restarted by a second
+    page load."""
     if session.member_deadline is not None:
         return session
     if session.status != SessionStatus.active:
@@ -151,7 +180,7 @@ async def ensure_member_clock(db: AsyncSession, session: TeamSession) -> TeamSes
     if session.team_started_at is None:
         session.team_started_at = datetime.now(timezone.utc)
 
-    slice_seconds = min(budget_seconds(competition) // 3, remaining)
+    slice_seconds = min(budget_seconds(competition) // TEAM_MEMBERS_COUNT, remaining)
     now = datetime.now(timezone.utc)
     session.member_started_at = now
     session.member_deadline = now + timedelta(seconds=slice_seconds)

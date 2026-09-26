@@ -62,6 +62,8 @@ export default function CodingWorkspacePage() {
   const [teamTimeRemainingSeconds, setTeamTimeRemainingSeconds] = useState<number | null>(null);
   const [team, setTeam] = useState<TeamBrief | null>(null);
   const [handoffOpen, setHandoffOpen] = useState(false);
+  const [completeOpen, setCompleteOpen] = useState(false);
+  const [completing, setCompleting] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const warnedRef = useRef<{ warn: boolean; crit: boolean }>({ warn: false, crit: false });
@@ -232,6 +234,19 @@ export default function CodingWorkspacePage() {
       setTimeout(() => (window.location.href = "/team"), 900);
     } catch {
       toast.error("Handoff rejected by the server.");
+    }
+  };
+
+  const doComplete = async () => {
+    setCompleteOpen(false);
+    setCompleting(true);
+    try {
+      const { data } = await api.post("/coding/complete", {});
+      toast.success(data.message ?? "Round 2 complete");
+      setTimeout(() => (window.location.href = "/team"), 1200);
+    } catch {
+      toast.error("Could not close the round right now — try again.");
+      setCompleting(false);
     }
   };
 
@@ -536,8 +551,15 @@ export default function CodingWorkspacePage() {
             {submitting ? "Submitting…" : "Submit"}
           </button>
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
-          <button className="btn-secondary border-warning/30 text-warning hover:bg-warning/10 text-xs" onClick={() => setHandoffOpen(true)}>
-            ⟳ Hand Off to Next Member
+          {team && activeMember < team.members.length ? (
+            <button className="btn-secondary border-warning/30 text-warning hover:bg-warning/10 text-xs" onClick={() => setHandoffOpen(true)}>
+              ⟳ Hand Off to Next Member
+            </button>
+          ) : (
+            <span className="text-[11px] font-medium uppercase tracking-wider text-warning">Final member — no handoff</span>
+          )}
+          <button className="btn-secondary border-danger/30 text-danger hover:bg-danger/10 text-xs" onClick={() => setCompleteOpen(true)} disabled={completing}>
+            {completing ? "Closing round…" : "Finish Round 2 Early"}
           </button>
         </div>
       </footer>
@@ -562,6 +584,25 @@ export default function CodingWorkspacePage() {
           </span>.
         </p>
         <p className="mt-2 text-sm text-muted">You will lose editor access and cannot reclaim the turn.</p>
+      </Modal>
+
+      {/* Early completion confirm */}
+      <Modal
+        open={completeOpen}
+        onClose={() => setCompleteOpen(false)}
+        title="Finish Round 2 early?"
+        footer={
+          <>
+            <button className="btn-secondary" onClick={() => setCompleteOpen(false)}>Keep coding</button>
+            <button className="btn-primary" onClick={doComplete}>Yes, close the round</button>
+          </>
+        }
+      >
+        <p className="text-sm">
+          This <span className="font-medium text-text">ends Round 2 for the whole team immediately</span> — your solved
+          problems and scores are locked in, and no member will get any more time.
+        </p>
+        <p className="mt-2 text-sm text-muted">Any time left in the relay is discarded. There is no undo.</p>
       </Modal>
 
       {/* Submissions */}

@@ -922,6 +922,9 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
   }
 
   /* ----- coding ----- */
+  if (url === "/coding/complete" && method === "post") {
+    return respond({ ok: true, completed: true, message: "Round 2 complete — your team's share of time ends here." });
+  }
   if (url === "/coding/problems" && method === "get") {
     const set = assignedSet(store.team.id);
     return respond({

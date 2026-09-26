@@ -19,9 +19,9 @@ from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.errors import AuthError
 from app.core.security import require_active_team_member, require_participant
-from app.models.models import CodingProblem, Competition, TestCase, CodeDraft, Submission, TeamSession, TeamMember, Participant, User
+from app.models.models import CodingProblem, Competition, TestCase, CodeDraft, Submission, TeamSession, SessionStatus, TeamMember, Participant, User
 from app.services.execution_client import execute_job
-from app.services.relay_service import ensure_member_clock, team_time_remaining
+from app.services.relay_service import ensure_member_clock, team_time_remaining, complete_team_round
 
 router = APIRouter(prefix="/coding", tags=["coding"])
 
@@ -398,6 +398,28 @@ async def submit_code(
         "memory_kb": worst_mem,
         "judge": "real",
     }
+
+
+@router.post("/complete")
+async def complete_round(db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)):
+    """End the team's Round 2 immediately — for teams that finish their work
+    mid-round. Any remaining time is discarded and no further turns can run.
+    Only the currently active member may close the round."""
+    session = await db.scalar(select(TeamSession).where(TeamSession.team_id == membership.team_id))
+    if session is None or session.status != SessionStatus.active:
+        raise AuthError("CONFLICT", "Your team's round is not currently active.", 409)
+    await complete_team_round(db, session)
+    await log_action(
+        db,
+        user_id=None,
+        action="ROUND2_COMPLETED",
+        metadata={
+            "team_id": str(membership.team_id),
+            "member_number": membership.member_number,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return {"completed": True, "message": "Round 2 complete — your team's share of time ends here."}
 
 
 @router.get("/submissions")

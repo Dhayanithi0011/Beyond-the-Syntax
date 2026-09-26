@@ -113,27 +113,66 @@ async def dev_local_execute(
         return await _run_subprocess(["java", "-cp", str(work), "Main"], stdin, time_limit_ms)
 
 
+_PISTON_API_URL = "https://emkc.org/api/v2/piston"
+
+
+# language key used in the rest of the app -> (Piston language name, filename)
+_PISTON_LANGUAGE = {
+    "c": ("c", "main.c"),
+    "cpp": ("c++", "main.cpp"),
+    "java": ("java", "Main.java"),
+    "python": ("python", "main.py"),
+}
+
+
 async def execute_job(
     *, language: str, source_code: str, stdin: str, time_limit_ms: int, memory_limit_mb: int
 ) -> ExecutionResult:
+    piston_lang, filename = _PISTON_LANGUAGE.get(language, (language, "main.txt"))
+    payload = {
+        "language": piston_lang,
+        "version": "*",  # matches whatever version Piston has installed
+        "files": [{"name": filename, "content": source_code}],
+        "stdin": stdin,
+        "run_timeout": time_limit_ms,
+        "compile_timeout": 10_000,
+        "run_memory_limit": memory_limit_mb * 1024 * 1024,
+    }
     try:
-        async with httpx.AsyncClient(base_url=settings.execution_service_url, timeout=30) as client:
-            resp = await client.post(
-                "/execute",
-                json={
-                    "language": language,
-                    "source_code": source_code,
-                    "stdin": stdin,
-                    "time_limit_ms": time_limit_ms,
-                    "memory_limit_mb": memory_limit_mb,
-                },
-            )
+        async with httpx.AsyncClient(base_url=_PISTON_API_URL, timeout=30) as client:
+            resp = await client.post("/execute", json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return ExecutionResult(**data)
     except httpx.HTTPError:
         if not settings.dev_mode:
             raise
         return await dev_local_execute(
             language=language, source_code=source_code, stdin=stdin, time_limit_ms=time_limit_ms
         )
+
+    compile_block = data.get("compile")
+    if compile_block and compile_block.get("code") not in (0, None):
+        return ExecutionResult(
+            "compilation_error",
+            stdout=_cap(compile_block.get("stdout", "")),
+            stderr=_cap(compile_block.get("stderr", "")),
+        )
+
+    run = data.get("run", {})
+    if run.get("signal") in ("SIGKILL", "SIGTERM"):
+        status = "tle"
+    elif run.get("code") not in (0, None):
+        status = "runtime_error"
+    else:
+        status = "ok"
+
+    return ExecutionResult(
+        status,
+        stdout=_cap(run.get("stdout", "")),
+        stderr=_cap(run.get("stderr", "")),
+        # Piston's public API doesn't report timing or memory usage, so these
+        # stay at 0 and "mle" is never distinguished from "ok" — a real
+        # trade-off versus the original cgroup-based sandbox design.
+        time_ms=0,
+        memory_kb=0,
+    )

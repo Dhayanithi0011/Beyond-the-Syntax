@@ -91,7 +91,7 @@ async def login(
         if user is None:
             user = await user_repository.get_user_by_phone(db, identifier)
     if user is None:
-        raise AuthError("NOT_FOUND", "No account found for that email, register number, or phone.", 401)
+        raise AuthError("NOT_FOUND", "No account found with that email, register number, or phone — please register first.", 401)
 
     if not (settings.supabase_url and settings.supabase_anon_key):
         raise AuthError("OAUTH_ERROR", "Identity provider not configured.", 503)
@@ -107,7 +107,9 @@ async def login(
         raise AuthError("OAUTH_ERROR", "Could not reach the identity provider.", 503) from exc
 
     if resp.status_code != 200:
-        raise AuthError("INVALID_CREDENTIALS", "Incorrect email or password.", 401)
+        # The identifier resolved to a real account, so a rejected password
+        # grant means the password itself was wrong.
+        raise AuthError("INVALID_CREDENTIALS", "Incorrect password. Please try again.", 401)
 
     data = resp.json()
     await log_action(
@@ -153,6 +155,15 @@ async def signup(
     existing = await user_repository.get_user_by_email(db, signup_email)
     if existing is not None:
         raise AuthError("ALREADY_REGISTERED", "An account already exists for that email or register number.", 409)
+
+    existing = await user_repository.get_user_by_participant_code(db, payload.participant_code.strip())
+    if existing is not None:
+        raise AuthError("ALREADY_REGISTERED", "An account already exists for that register number.", 409)
+
+    if (payload.phone or "").strip():
+        existing = await user_repository.get_user_by_phone(db, payload.phone.strip())
+        if existing is not None:
+            raise AuthError("ALREADY_REGISTERED", "That mobile number is already registered to another account.", 409)
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:

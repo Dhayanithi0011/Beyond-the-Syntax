@@ -22,14 +22,6 @@ services:
     ports:
       - "8000:8000"
 
-  execution:
-    build: ./execution
-    ports:
-      - "8100:8100"
-    # Needs access to the host Docker daemon to launch per-job sandboxes.
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-
   frontend:
     build:
       context: ./frontend
