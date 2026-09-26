@@ -1,0 +1,29 @@
+# Keep build contexts lean.
+
+# Frontend / node
+**/node_modules
+**/dist
+*.tsbuildinfo
+
+# Python
+**/__pycache__
+*.py[cod]
+**/.venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+
+# Secrets — never copied into images. Compose passes env values at build/run time.
+**/.env
+.env.local
+backend/uvicorn.err.log
+backend/uvicorn.out.log
+
+# Editor / OS
+.git
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.tmp

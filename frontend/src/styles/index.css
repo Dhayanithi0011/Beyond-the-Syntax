@@ -1,0 +1,139 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply antialiased bg-bg text-text font-sans;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply tracking-tight;
+  }
+
+  ::selection {
+    @apply bg-primary/20 text-text;
+  }
+
+  /* Consistent, themed scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    @apply bg-soft rounded-full;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    @apply bg-line;
+  }
+
+  /* Visible keyboard focus */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-primary;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border border-line rounded-xl shadow-card;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-primary hover:bg-[#1E40AF] text-white shadow-card;
+  }
+  .btn-secondary {
+    @apply btn bg-white hover:bg-soft text-text border border-line;
+  }
+  .btn-ghost {
+    @apply btn hover:bg-soft text-muted;
+  }
+  .btn-danger {
+    @apply btn bg-danger hover:bg-[#991B1B] text-white;
+  }
+  .btn-success {
+    @apply btn bg-success hover:bg-[#166534] text-white;
+  }
+  .input {
+    @apply w-full bg-white border border-line rounded-lg px-3 py-2 text-sm text-text placeholder:text-muted/60 focus:border-primary/70 focus:ring-2 focus:ring-primary/10 outline-none transition;
+  }
+  .label {
+    @apply block text-sm font-medium text-text/70 mb-1.5;
+  }
+
+  /* Quiz anti-cheating: disable text selection / copy affordances on question
+     content. A CSS-level deterrent only — the real protection is that answer
+     keys and hidden test cases are never sent to the browser in the first place.
+     Round 1 quiz questions and Round 2 problem statements both use these. */
+  .quiz-protected,
+  .copy-protected {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .copy-protected {
+    -webkit-touch-callout: none;
+  }
+
+  .txt-mono {
+    @apply font-mono;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out;
+}
+.animate-toast-in {
+  animation: toast-in 0.2s ease-out;
+}
+.animate-pop-in {
+  animation: pop-in 0.18s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
