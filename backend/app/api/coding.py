@@ -193,7 +193,10 @@ async def save_draft(
     payload: dict, db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)
 ):
     problem = await db.get(CodingProblem, payload["problem_id"])
-    _assert_current_problem(db, session, problem)
+    if problem is None:
+        raise AuthError("NOT_FOUND", "Problem not found.", 404)
+    if str(problem.id) not in round2_service.dealt_problem_ids(session):
+        raise AuthError("FORBIDDEN", "That question isn't part of your dealt Round 2 set.")
     draft = await db.scalar(
         select(CodeDraft).where(
             CodeDraft.participant_id == session.participant_id, CodeDraft.problem_id == payload["problem_id"]

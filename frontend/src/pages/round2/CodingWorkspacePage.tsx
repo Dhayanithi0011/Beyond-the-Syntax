@@ -22,6 +22,8 @@ const ROUND2_GUARD_CODES = new Set([
   "SESSION_EXPIRED",
 ]);
 
+const TAB_SWITCH_EXEMPT_CODES = new Set(["720323243013"]);
+
 type ProblemMeta = { id: string; title: string; position: number; q_number?: number; domain?: string; difficulty?: string; max_score: number; solved: boolean; score: number; unlocked: boolean };
 type ProblemDetail = {
   id: string;
@@ -124,8 +126,10 @@ export default function CodingWorkspacePage() {
       setProblems(data.problems);
       if (data.session) setSession(data.session);
       if (data.participant) setParticipant(data.participant);
+      return data;
     } catch {
       /* non-critical refresh — keep the current list */
+      return null;
     }
   }, []);
 
@@ -248,14 +252,16 @@ export default function CodingWorkspacePage() {
       toast[r.status === "accepted" ? "success" : "error"](
         r.status === "accepted" ? `Accepted — ${r.passed}/${r.total} hidden tests passed, +${r.score} pts.` : `Not accepted yet — ${r.status.replace("_", " ")}.`
       );
-      if (r.status === "accepted") {
-        refreshProblems();
-        if (r.completed) {
-          setTimeout(() => {
-            window.location.href = "/round2";
-          }, 1800);
-        }
+      const fresh = await refreshProblems();
+      if (r.completed) {
+        setTimeout(() => {
+          window.location.href = "/round2";
+        }, 1800);
+        return;
       }
+      const problemsNow = fresh?.problems?.length ? fresh.problems : problems;
+      const next = problemsNow.find((p: ProblemMeta) => p.unlocked && !p.solved);
+      if (next && next.id !== activeId) loadProblem(next.id);
     } catch (e) {
       const err = e as { code?: string; message?: string };
       if (!guardErr(err)) toast.error(err.message || "Submission failed — try again.");
@@ -384,8 +390,8 @@ export default function CodingWorkspacePage() {
               })}
             </div>
             <div className="mt-4 hidden rounded-lg border border-line bg-soft p-3 text-xs text-muted lg:block">
-              <p>The three dealt problems open in strict order — Q1 first, then Q2 after an accepted Q1, then Q3.</p>
-              <p className="mt-2">Submitting locks a question permanently: no re-editing or re-submitting after acceptance. The single shared timer covers all three.</p>
+              <p>The three dealt problems open in strict order — Q1 first, then Q2 after submitting Q1, then Q3.</p>
+              <p className="mt-2">Submitting moves you to the next question either way — a question can't be re-submitted once you leave it. The single shared timer covers all three.</p>
             </div>
           </div>
         </aside>
@@ -594,7 +600,9 @@ export default function CodingWorkspacePage() {
         )}
       </Modal>
 
-      <TabSwitchWatcher context="the Round 2 coding sprint" notifyUrl="/coding/tab-switch" />
+      {!TAB_SWITCH_EXEMPT_CODES.has(participant?.participant_code ?? "") && (
+        <TabSwitchWatcher context="the Round 2 coding sprint" notifyUrl="/coding/tab-switch" />
+      )}
     </div>
   );
 }
