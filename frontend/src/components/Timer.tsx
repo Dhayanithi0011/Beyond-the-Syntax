@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 /**
  * Server-authoritative countdown display. It only ever counts DOWN from the
  * deadline it is given — it never invents or extends time. The source of truth
- * remains the backend (member_deadline / team_deadline).
+ * remains the backend (the shared session / quiz deadline).
  */
 export function useCountdown(deadline: Date | string | null) {
   const target = useMemo(() => (deadline ? new Date(deadline).getTime() : null), [deadline]);

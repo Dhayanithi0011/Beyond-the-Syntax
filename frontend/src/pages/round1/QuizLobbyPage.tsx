@@ -26,15 +26,15 @@ export default function QuizLobbyPage() {
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [starting, setStarting] = useState(false);
   const [selectedPopup, setSelectedPopup] = useState(false);
-  const [teamStatus, setTeamStatus] = useState<string>("none");
+  const [r2SessionStatus, setR2SessionStatus] = useState<string>("none");
 
   useEffect(() => {
     api.get("/competition").then(({ data }) => setComp(data)).catch(() => {});
     api.get("/quiz/attempt").then(({ data }) => setAttempt(data)).catch(() => {});
     api
-      .get("/teams/status")
+      .get("/round2/status")
       .then(({ data }) => {
-        setTeamStatus(data?.team_status ?? "none");
+        setR2SessionStatus(data?.session?.status ?? "none");
         if (data?.qualified && !localStorage.getItem(R2_SEEN_KEY)) {
           setSelectedPopup(true);
         }
@@ -154,28 +154,22 @@ export default function QuizLobbyPage() {
         footer={
           <>
             <button className="btn-secondary" onClick={dismissSelected}>Later</button>
-            <button className="btn-primary" onClick={() => { dismissSelected(); navigate("/team"); }}>
-              {teamStatus === "none" ? "Form your team →" : "Go to your team →"}
+            <button className="btn-primary" onClick={() => { dismissSelected(); navigate("/round2"); }}>
+              {r2SessionStatus === "active" ? "Enter your Round 2 →" : "Go to Round 2 →"}
             </button>
           </>
         }
       >
         <p className="text-sm">
-          Congratulations — you've made it to Round 2: the coding relay.
+          Congratulations — you're in Round 2, the individual coding sprint.
         </p>
-        {teamStatus === "none" ? (
-          <>
-            <p className="mt-2 text-sm">
-              Form a team of 3 qualified members (team name + member names) and submit it for admin approval.
-            </p>
-            <p className="mt-2 text-sm text-muted">
-              Your team gets <span className="font-semibold text-text">45 minutes total — 15 minutes each</span>.
-              When a member's time ends, their editor locks and the next member takes over.
-            </p>
-          </>
-        ) : (
+        <p className="mt-2 text-sm">
+          When the organizers launch the round, you're dealt <span className="font-medium text-text">3 problems</span> —
+          Q1, Q2 and Q3 — solved in strict order under a single shared timer.
+        </p>
+        {r2SessionStatus === "active" && (
           <p className="mt-2 text-sm text-muted">
-            Your team has been {teamStatus === "pending" ? "submitted for admin approval — the organizers will start your relay once they approve it." : "approved — get ready for the coding relay."}
+            Your round is live right now — head to the workspace to start coding.
           </p>
         )}
       </Modal>

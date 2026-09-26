@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api import auth, quiz, teams, coding, admin, leaderboard, public
+from app.api import auth, quiz, round2, coding, admin, leaderboard, public
 
 app = FastAPI(title=settings.app_name)
 
@@ -17,7 +17,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(public.router, prefix="/api/v1")
 app.include_router(quiz.router, prefix="/api/v1")
-app.include_router(teams.router, prefix="/api/v1")
+app.include_router(round2.router, prefix="/api/v1")
 app.include_router(coding.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(leaderboard.router, prefix="/api/v1")

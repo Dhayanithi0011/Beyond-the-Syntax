@@ -7,7 +7,7 @@ const NAV = [
   { to: "/admin", label: "Dashboard", icon: "▦", end: true },
   { to: "/admin/questions", label: "Questions", icon: "?" },
   { to: "/admin/participants", label: "Participants", icon: "◉" },
-  { to: "/admin/teams", label: "Teams", icon: "▲" },
+  { to: "/admin/round2", label: "Round 2", icon: "◧" },
   { to: "/admin/leaderboard", label: "Leaderboard", icon: "◈" },
   { to: "/admin/live", label: "Live Monitor", icon: "◔" },
 ];

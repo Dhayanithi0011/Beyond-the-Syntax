@@ -9,9 +9,10 @@ type Dashboard = {
     total_participants: number;
     quiz_completed: number;
     qualified: number;
-    teams_created: number;
-    active_teams: number;
-    completed_teams: number;
+    round2_sessions: number;
+    active_round2: number;
+    completed_round2: number;
+    expired_round2: number;
     avg_quiz_score: number;
     highest_quiz_score: number;
     total_submissions: number;
@@ -57,12 +58,18 @@ export default function DashboardPage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Total participants" value={s.total_participants} icon="◉" tone="primary" />
         <StatCard label="Quiz completed" value={s.quiz_completed} icon="✓" tone="success" hint={`${Math.round((s.quiz_completed / s.total_participants) * 100)}% of registered`} />
-        <StatCard label="Qualified" value={s.qualified} icon="★" tone="warning" hint="Round 2 eligible" />
-        <StatCard label="Teams" value={`${s.active_teams} active`} icon="▲" tone="info" hint={`${s.completed_teams} completed of ${s.teams_created}`} />
+        <StatCard
+          label="Round 2"
+          value={s.round2_sessions}
+          icon="◧"
+          tone="warning"
+          hint={`${s.active_round2} active · ${s.completed_round2} completed · ${s.expired_round2} expired`}
+        />
+        <StatCard label="Qualified" value={s.qualified} icon="★" tone="primary" hint="Round 2 eligible" />
         <StatCard label="Average quiz score" value={s.avg_quiz_score.toFixed(1)} icon="📊" tone="primary" hint="out of 30" />
         <StatCard label="Highest quiz score" value={`${s.highest_quiz_score}/30`} icon="🏆" tone="success" />
-        <StatCard label="Total submissions" value={s.total_submissions} icon="⌨" tone="info" hint="across all teams" />
-        <StatCard label="Accepted" value={s.accepted_submissions} icon="%" tone="success" hint={`${Math.round((s.accepted_submissions / s.total_submissions) * 100)}% acceptance`} />
+        <StatCard label="Total submissions" value={s.total_submissions} icon="⌨" tone="info" hint="across Round 2 participants" />
+        <StatCard label="Accepted" value={s.accepted_submissions} icon="%" tone="success" hint={`${Math.round((s.accepted_submissions / Math.max(s.total_submissions, 1)) * 100)}% acceptance`} />
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
@@ -110,7 +117,7 @@ export default function DashboardPage() {
               {data.recent_activity.map((a) => (
                 <li key={a.id} className="flex items-center gap-3 text-sm">
                   <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-soft text-[10px] text-muted">
-                    {a.action === "TEAM_STARTED" ? "▶" : a.action === "MEMBER_HANDOFF" ? "⟳" : a.action === "CODE_SUBMITTED" ? "⌨" : a.action.startsWith("ROUND2") ? "★" : "✓"}
+                    {a.action === "ROUND2_COMPLETED" ? "🏁" : a.action.startsWith("ROUND2") ? "★" : a.action === "CODE_SUBMITTED" ? "⌨" : "✓"}
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate">

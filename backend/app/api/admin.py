@@ -3,8 +3,7 @@ Admin-only endpoints. Every route here depends on `require_admin`. All reads
 are computed live from the database (no cached leaderboards yet); state-changing
 actions are recorded via core/audit.log_action.
 """
-import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func
@@ -17,10 +16,9 @@ from app.core.security import require_admin
 from app.models.models import (
     AuditLog, CodingProblem, Competition, Difficulty, Option, Participant, Question,
     QualificationStatus, QuizAnswer, QuizAttempt, AttemptStatus, Submission,
-    Team, TeamMember, TeamSession, SessionStatus, TeamStatus, User,
+    Round2Session, SessionStatus, User,
 )
-from app.services.relay_service import advance_to_next_member
-from app.services.team_service import load_team_rows
+from app.services import round2_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -132,6 +130,7 @@ async def delete_question(question_id: str, db: AsyncSession = Depends(get_db), 
 
 @router.get("/participants")
 async def list_participants(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    comp = await _active_competition(db)
     rows = (
         await db.execute(
             select(Participant, User, QuizAttempt)
@@ -156,16 +155,22 @@ async def list_participants(db: AsyncSession = Depends(get_db), admin=Depends(re
     for uid, where, count in tab_rows:
         tab_by_user.setdefault(str(uid), {})[str(where)] = count
 
-    # Which Round 2 team each participant belongs to (if any, i.e. qualified).
-    team_rows = (
-        await db.execute(
-            select(Participant.user_id, Team.name)
-            .join(TeamMember, TeamMember.participant_id == Participant.id)
-            .join(Team, Team.id == TeamMember.team_id)
-            .where(Participant.user_id.in_(user_ids))
+    # Round 2 sessions per participant (individual round — no teams any more).
+    sessions = (
+        await db.scalars(
+            select(Round2Session).where(Round2Session.competition_id == comp.id)
         )
     ).all()
-    team_by_user = {str(uid): name for uid, name in team_rows}
+    session_by_participant = {str(s.participant_id): s for s in sessions}
+    solved_by_participant: dict[str, int] = {}
+    for pid, solved in (
+        await db.execute(
+            select(Submission.participant_id, func.count())
+            .where(Submission.participant_id.in_([str(x) for x in session_by_participant]))
+            .group_by(Submission.participant_id)
+        )
+    ).all():
+        solved_by_participant[str(pid)] = solved
 
     participants = []
     for p, user, attempt in rows:
@@ -176,6 +181,7 @@ async def list_participants(db: AsyncSession = Depends(get_db), admin=Depends(re
         else:
             quiz_status = "not_submitted"
         switches = tab_by_user.get(str(user.id), {})
+        sess = session_by_participant.get(str(p.id))
         participants.append({
             "id": str(p.id),
             "participant_code": p.participant_code,
@@ -187,7 +193,8 @@ async def list_participants(db: AsyncSession = Depends(get_db), admin=Depends(re
             "score": attempt.score if attempt else None,
             "submitted_at": attempt.submitted_at.isoformat() if attempt and attempt.submitted_at else None,
             "qualification_status": _value(attempt.qualification_status) if attempt else QualificationStatus.pending.value,
-            "team": team_by_user.get(str(user.id)),
+            "round2_status": _value(sess.status) if sess else None,
+            "round2_solved": solved_by_participant.get(str(p.id), 0),
             "tab_switches": {
                 "round1": switches.get("quiz", 0),
                 "round2": switches.get("coding", 0),
@@ -225,13 +232,12 @@ async def dashboard(db: AsyncSession = Depends(get_db), admin=Depends(require_ad
     ).all()
     scores = [a.score or 0 for a in attempts]
 
-    teams = (await db.scalars(select(Team).where(Team.competition_id == comp.id))).all()
-    sessions = {
-        str(s.team_id): s
-        for s in (await db.scalars(select(TeamSession))).all()
-        if str(s.team_id)
-    }
-    team_ids = {str(t.id) for t in teams}
+    sessions = (
+        await db.scalars(select(Round2Session).where(Round2Session.competition_id == comp.id))
+    ).all()
+    active_sessions = [s for s in sessions if s.status == SessionStatus.active]
+    completed_sessions = [s for s in sessions if s.status == SessionStatus.completed]
+    expired_sessions = [s for s in sessions if s.status == SessionStatus.expired]
 
     total_submissions = await db.scalar(select(func.count()).select_from(Submission)) or 0
     accepted_submissions = (
@@ -260,19 +266,20 @@ async def dashboard(db: AsyncSession = Depends(get_db), admin=Depends(require_ad
 
     activity: list[dict] = []
 
-    for sub, problem in (
+    for sub, problem, p, user in (
         await db.execute(
-            select(Submission, CodingProblem)
+            select(Submission, CodingProblem, Participant, User)
             .join(CodingProblem, CodingProblem.id == Submission.problem_id)
+            .outerjoin(Participant, Participant.id == Submission.participant_id)
+            .outerjoin(User, User.id == Participant.user_id)
             .order_by(Submission.submitted_at.desc())
             .limit(6)
         )
     ).all():
-        team = await db.get(Team, sub.team_id)
         activity.append({
-            "actor": team.name if team else "System",
+            "actor": user.name if user else "System",
             "action": "CODE_SUBMITTED",
-            "target": f"{problem.title}",
+            "target": f"{problem.title} · {sub.score} pts",
             "at": sub.submitted_at.isoformat() if sub.submitted_at else None,
         })
 
@@ -300,14 +307,13 @@ async def dashboard(db: AsyncSession = Depends(get_db), admin=Depends(require_ad
             "at": a.submitted_at.isoformat() if a.submitted_at else None,
         })
 
-    for s in sessions.values():
-        if s.team_started_at and str(s.team_id) in team_ids:
-            team = await db.get(Team, s.team_id)
+    for s in active_sessions:
+        if s.started_at:
             activity.append({
                 "actor": "System",
-                "action": "TEAM_STARTED",
-                "target": team.name if team else "Team",
-                "at": s.team_started_at.isoformat(),
+                "action": "ROUND2_STARTED",
+                "target": "Individual Round 2 launched",
+                "at": s.started_at.isoformat(),
             })
 
     activity = [a for a in activity if a["at"]]
@@ -318,9 +324,10 @@ async def dashboard(db: AsyncSession = Depends(get_db), admin=Depends(require_ad
             "total_participants": total_participants,
             "quiz_completed": len(attempts),
             "qualified": len([a for a in attempts if a.qualification_status == QualificationStatus.qualified]),
-            "teams_created": len(teams),
-            "active_teams": len([s for s in sessions.values() if str(s.team_id) in team_ids and s.status == SessionStatus.active]),
-            "completed_teams": len([s for s in sessions.values() if str(s.team_id) in team_ids and s.status == SessionStatus.completed]),
+            "round2_sessions": len(sessions),
+            "active_round2": len(active_sessions),
+            "completed_round2": len(completed_sessions),
+            "expired_round2": len(expired_sessions),
             "avg_quiz_score": round(sum(scores) / len(scores), 1) if scores else 0,
             "highest_quiz_score": max(scores) if scores else 0,
             "total_submissions": total_submissions,
@@ -335,172 +342,104 @@ async def dashboard(db: AsyncSession = Depends(get_db), admin=Depends(require_ad
 
 
 # ---------------------------------------------------------------------------
-# Teams
+# Round 2 (individual)
 # ---------------------------------------------------------------------------
 
-@router.get("/teams")
-async def list_teams(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    comp = await _active_competition(db)
-    return {"teams": await load_team_rows(db, comp.id)}
+async def _round2_row(db: AsyncSession, session: Round2Session) -> dict:
+    participant = await db.get(Participant, session.participant_id)
+    user = await db.get(User, participant.user_id) if participant else None
+    dealt = round2_service.dealt_problem_ids(session)
 
-
-@router.post("/teams")
-async def create_team(payload: dict, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    comp = await _active_competition(db)
-    team = Team(competition_id=comp.id, name=payload["name"], color=payload.get("color"))
-    db.add(team)
-    await db.flush()
-
-    ids = payload.get("member_participant_ids")
-    if ids is None and payload.get("member_names"):
-        names = payload["member_names"]
-        participants = (
-            await db.execute(
-                select(Participant, User)
-                .join(User, User.id == Participant.user_id)
-                .where(User.name.in_(names))
-            )
-        ).all()
-        by_name = {user.name: p for p, user in participants}
-        ids = [str(by_name[name].id) for name in names if name in by_name]
-
-    for number, participant_id in enumerate((ids or [])[:3], start=1):
-        db.add(TeamMember(team_id=team.id, participant_id=participant_id, member_number=number))
-    await db.commit()
-    await log_action(db, user_id=admin.user_id, action="TEAM_CREATED", metadata={"team_id": str(team.id)})
-    return {"id": str(team.id)}
-
-
-async def _get_team(db: AsyncSession, team_id: str) -> Team:
-    team = await db.get(Team, team_id)
-    if team is None:
-        raise AuthError("NOT_FOUND", "Team not found", 404)
-    return team
-
-
-async def _deal_set_to_session(db: AsyncSession, session: TeamSession, competition_id) -> None:
-    """Randomly deals one question-set (1 of the 10) to a team about to start.
-    The round-robin rotation then derives the active set from
-    `start_set_index + completed_rounds`, so each team starts somewhere
-    different but follows the same set sequence."""
-    n_problems = (
-        await db.scalar(
-            select(func.count())
-            .select_from(CodingProblem)
-            .where(CodingProblem.competition_id == competition_id)
+    rows = (
+        await db.execute(
+            select(CodingProblem.title, Submission.problem_id, func.max(Submission.score))
+            .join(Submission, Submission.problem_id == CodingProblem.id)
+            .where(Submission.participant_id == session.participant_id)
+            .group_by(CodingProblem.title, Submission.problem_id)
         )
-        or 0
+    ).all()
+    by_problem = {str(pid): {"title": title, "score": score} for title, pid, score in rows}
+    score = sum(item["score"] or 0 for item in by_problem.values())
+    solved = sum(1 for item in by_problem.values() if (item["score"] or 0) > 0)
+
+    return {
+        "id": str(session.id),
+        "participant_id": str(session.participant_id),
+        "participant_code": participant.participant_code if participant else "",
+        "name": user.name if user else "Participant",
+        "status": _value(session.status),
+        "started_at": session.started_at.isoformat() if session.started_at else None,
+        "deadline": session.deadline.isoformat() if session.deadline else None,
+        "time_remaining_seconds": round2_service.time_remaining_seconds(session) if session.status in (SessionStatus.active,) else None,
+        "current_index": session.current_index,
+        "total_questions": len(dealt),
+        "dealt": [
+            {
+                "q_number": i + 1,
+                "problem_id": pid,
+                "title": by_problem.get(pid, {}).get("title", "Problem"),
+                "score": by_problem.get(pid, {}).get("score", 0),
+                "solved": (by_problem.get(pid, {}).get("score") or 0) > 0,
+            }
+            for i, pid in enumerate(dealt)
+        ],
+        "score": score,
+        "solved_count": solved,
+    }
+
+
+@router.get("/round2")
+async def list_round2_sessions(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    comp = await _active_competition(db)
+    sessions = (
+        await db.scalars(
+            select(Round2Session).where(Round2Session.competition_id == comp.id).order_by(Round2Session.created_at)
+        )
+    ).all()
+    return {
+        "sessions": [await _round2_row(db, s) for s in sessions],
+        "competition_state": _value(comp.state),
+        "round2_duration_seconds": round2_service.round2_total_seconds(comp),
+    }
+
+
+@router.post("/round2/start")
+async def start_round2(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    """Launches the individual round for every qualified participant: deals each
+    participant Q1..Q3 round-robin from a freshly shuffled deck and opens all
+    clocks to one shared deadline. Idempotent — participants already running
+    keep their existing session. Sets the competition state to `round2_active`."""
+    comp = await _active_competition(db)
+    result = await round2_service.start_round2(db, comp.id)
+    await log_action(
+        db, user_id=admin.user_id, action="ROUND2_STARTED",
+        metadata={"dealt": result["dealt"], "deadline": result["deadline"]},
     )
-    num_sets = max(n_problems // 3, 1)
-    session.start_set_index = random.randrange(num_sets)
-    session.completed_rounds = 0
+    return {"started": result["dealt"], "total_sessions": result["total_sessions"], "deadline": result["deadline"]}
 
 
-@router.post("/teams/{team_id}/activate")
-async def activate_team(team_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    team = await _get_team(db, team_id)
-
-    session = await db.scalar(select(TeamSession).where(TeamSession.team_id == team_id))
+@router.post("/round2/{session_id}/reset")
+async def reset_round2_session(session_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    """Re-deals one participant a fresh 3-problem set, wipes their drafts and
+    submissions, and restarts their individual clock (admin override for
+    connection issues / disputes)."""
+    session = await db.get(Round2Session, session_id)
     if session is None:
-        session = TeamSession(team_id=team_id)
-        db.add(session)
-    session.status = SessionStatus.active
-    # No timer yet: team_started_at is set the first time a member enters the
-    # workspace, and usage only accrues mid-turn (see ensure_member_clock).
-    session.team_time_used_seconds = 0
-    session.current_member_number = 0
-    await _deal_set_to_session(db, session, team.competition_id)
-    team.status = TeamStatus.active
+        raise AuthError("NOT_FOUND", "Round 2 session not found", 404)
+    await round2_service.reset_session(db, session, session.competition_id)
+    await log_action(db, user_id=admin.user_id, action="ROUND2_SESSION_RESET", metadata={"session_id": session_id})
+    return {"reset": True, "status": _value(session.status)}
+
+
+@router.post("/round2/close")
+async def close_round2(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    """Locks the coding workspace for everyone immediately (any running sessions
+    keep ticking to their deadline but can no longer be worked)."""
+    comp = await _active_competition(db)
+    comp.state = "round2_closed"
     await db.commit()
-
-    await advance_to_next_member(db, team_id, reason="admin_activate")
-    await log_action(db, user_id=admin.user_id, action="TEAM_STARTED", metadata={"team_id": team_id})
-    return {"activated": True}
-
-
-@router.post("/teams/{team_id}/approve")
-async def approve_team(team_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    """One-step approval for participant-submitted teams: grants Round 2 access
-    AND starts the relay timer. This is the action an admin takes when they see
-    a pending team in the Teams console."""
-    team = await _get_team(db, team_id)
-    team.round2_access = True
-
-    session = await db.scalar(select(TeamSession).where(TeamSession.team_id == team_id))
-    if session is None:
-        session = TeamSession(team_id=team_id)
-        db.add(session)
-    session.status = SessionStatus.active
-    # No timer yet: the first workspace entry starts the team clock (see
-    # ensure_member_clock) — nothing ticks and nothing is lost while the team
-    # readies themselves after approval.
-    session.team_time_used_seconds = 0
-    session.current_member_number = 0
-    session.member_started_at = None
-    session.member_deadline = None
-    await _deal_set_to_session(db, session, team.competition_id)
-    team.status = TeamStatus.active
-    await db.commit()
-
-    await advance_to_next_member(db, team_id, reason="admin_approve")
-    await log_action(db, user_id=admin.user_id, action="TEAM_APPROVED", metadata={"team_id": team_id})
-    return {"approved": True}
-
-
-@router.post("/teams/{team_id}/pause")
-async def pause_team(team_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    team = await _get_team(db, team_id)
-    team.status = TeamStatus.paused
-    await db.commit()
-    await log_action(db, user_id=admin.user_id, action="TEAM_PAUSED", metadata={"team_id": team_id})
-    return {"paused": True}
-
-
-@router.post("/teams/{team_id}/resume")
-async def resume_team(team_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    team = await _get_team(db, team_id)
-    team.status = TeamStatus.active
-    await db.commit()
-    await log_action(db, user_id=admin.user_id, action="TEAM_RESUMED", metadata={"team_id": team_id})
-    return {"resumed": True}
-
-
-@router.post("/teams/{team_id}/reset")
-async def reset_team(team_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    team = await _get_team(db, team_id)
-    session = await db.scalar(select(TeamSession).where(TeamSession.team_id == team_id))
-    if session is not None:
-        session.status = SessionStatus.not_started
-        session.current_member_number = None
-        session.member_started_at = None
-        session.member_deadline = None
-        session.team_started_at = None
-        session.team_deadline = None
-        session.team_time_used_seconds = 0
-        session.start_set_index = None
-        session.completed_rounds = 0
-    team.status = TeamStatus.pending
-    await db.commit()
-    await log_action(db, user_id=admin.user_id, action="TEAM_RESET", metadata={"team_id": team_id})
-    return {"reset": True}
-
-
-@router.post("/teams/{team_id}/grant-access")
-async def grant_access(team_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    team = await _get_team(db, team_id)
-    team.round2_access = True
-    await db.commit()
-    await log_action(db, user_id=admin.user_id, action="ROUND2_ACCESS_GRANTED", metadata={"team_id": team_id})
-    return {"round2_access": True}
-
-
-@router.post("/teams/{team_id}/revoke-access")
-async def revoke_access(team_id: str, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    team = await _get_team(db, team_id)
-    team.round2_access = False
-    await db.commit()
-    await log_action(db, user_id=admin.user_id, action="ROUND2_ACCESS_REVOKED", metadata={"team_id": team_id})
-    return {"round2_access": False}
+    await log_action(db, user_id=admin.user_id, action="ROUND2_CLOSED", metadata={})
+    return {"state": comp.state}
 
 
 # ---------------------------------------------------------------------------
@@ -510,32 +449,38 @@ async def revoke_access(team_id: str, db: AsyncSession = Depends(get_db), admin=
 @router.get("/live")
 async def live(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
     comp = await _active_competition(db)
-    teams = await load_team_rows(db, comp.id)
+    sessions = (
+        await db.scalars(
+            select(Round2Session).where(Round2Session.competition_id == comp.id).order_by(Round2Session.created_at)
+        )
+    ).all()
+    # Reconcile expired deadlines so the monitor reflects ground truth.
+    for s in sessions:
+        if s.status == SessionStatus.active:
+            s = await round2_service.sync_session_state(db, s)
 
     in_progress_attempts = set(
         (await db.scalars(select(QuizAttempt.participant_id).where(QuizAttempt.status == AttemptStatus.in_progress))).all()
     )
-    active_members = set(
-        (await db.scalars(
-            select(TeamMember.participant_id)
-            .join(TeamSession, TeamSession.team_id == TeamMember.team_id)
-            .where(TeamSession.status == SessionStatus.active)
-        )).all()
+    active_participants = {
+        str(s.participant_id) for s in sessions if s.status == SessionStatus.active
+    }
+    online_count = len(
+        {str(x) for x in in_progress_attempts} | {str(x) for x in active_participants}
     )
-    online_count = len({str(x) for x in in_progress_attempts} | {str(x) for x in active_members})
 
     submitted_count = await db.scalar(
         select(func.count()).select_from(QuizAttempt).where(
             QuizAttempt.competition_id == comp.id, QuizAttempt.status.in_(SUBMITTED)
         )
     ) or 0
-    teams_coding = sum(1 for t in teams if t["status"] == "active")
 
     return {
         "online_count": online_count,
         "submitted_count": submitted_count,
-        "teams_coding": teams_coding,
-        "teams": teams,
+        "coding_now": len(active_participants),
+        "competition_state": _value(comp.state),
+        "sessions": [await _round2_row(db, s) for s in sessions],
     }
 
 
@@ -554,7 +499,10 @@ async def transition_competition(payload: dict, db: AsyncSession = Depends(get_d
         competition = await db.get(Competition, competition_id)
     if competition is None:
         raise AuthError("NOT_FOUND", "Competition not found", 404)
-    competition.state = payload["to_state"]
+    to_state = payload.get("to_state")
+    if to_state is None:
+        raise AuthError("INVALID_REQUEST", "Missing required field: to_state", 400)
+    competition.state = to_state
     await db.commit()
     await log_action(db, user_id=admin.user_id, action="COMPETITION_STATE_CHANGED", metadata={"to_state": payload["to_state"]})
     return {"state": competition.state}

@@ -46,22 +46,22 @@ export default function LandingPage() {
               Beyond The <span className="text-primary">Syntax</span>
             </h1>
             <p className="mx-auto mt-5 max-w-xl text-lg text-muted">
-              A two-round competitive programming experience — an individual technical quiz, then a
-              three-member <span className="font-medium text-text">coding relay</span> on a shared timer.
+              A two-round competitive programming experience — an individual technical quiz, then an
+              individual <span className="font-medium text-text">coding sprint</span>: 3 problems, one shared timer.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link to="/quiz" className="btn-primary px-6 py-3 text-base">Enter Round 1</Link>
-              <Link to="/team" className="btn-secondary px-6 py-3 text-base">Round 2 — Coding Relay</Link>
+              <Link to="/round2" className="btn-secondary px-6 py-3 text-base">Round 2 — Coding Sprint</Link>
             </div>
             {comp ? (
               <div className="mx-auto mt-10 max-w-md">
                 <div className="card flex items-center justify-between p-4 text-left">
                   <div>
-                    <p className="text-xs text-muted">Relay team budget</p>
+                    <p className="text-xs text-muted">Round 2 duration</p>
                     <p className="text-2xl font-semibold tabular-nums text-text">
                       {fmtDur(comp.round2_team_duration_seconds)}
                     </p>
-                    <p className="mt-0.5 text-[10px] text-muted/70">Runs only while a member is working — pauses on handoff</p>
+                    <p className="mt-0.5 text-[10px] text-muted/70">One shared timer across all 3 dealt problems</p>
                   </div>
                   <StatusBadge status={comp.state} />
                 </div>
@@ -80,8 +80,8 @@ export default function LandingPage() {
               { k: `${comp.participants_accepted}`, v: "Registered" },
               { k: `${comp.round1_questions}`, v: "Quiz questions" },
               { k: fmtDur(comp.round1_duration_seconds), v: "Round 1 duration" },
-              { k: `${comp.round2_problems}`, v: "Relay problems" },
-              { k: fmtDur(comp.round2_team_duration_seconds), v: "Team budget" },
+              { k: `${comp.round2_problems}`, v: "Sprint problems" },
+              { k: fmtDur(comp.round2_team_duration_seconds), v: "Round 2 budget" },
             ].map((s) => (
               <div key={s.v} className="text-center">
                 <p className="text-2xl font-semibold tabular-nums text-primary">{s.k}</p>
@@ -115,9 +115,9 @@ export default function LandingPage() {
           <Arrow />
           <RoundCard
             tag="ROUND 2"
-            title="Coding Relay"
+            title="Individual Coding Sprint"
             tone="success"
-            points={["Teams of 3, one shared 45-minute budget", "Clock runs only during a member's turn — pauses on handoff", "C / C++ / Java / Python in a Monaco editor"]}
+            points={["Each qualified participant is dealt 3 problems", "One shared 45-minute timer across Q1 → Q2 → Q3", "C / C++ / Java / Python in a Monaco editor"]}
           />
         </div>
       </section>
@@ -126,7 +126,7 @@ export default function LandingPage() {
         <div className="mx-auto max-w-7xl px-4 py-16 text-center sm:px-6">
           <h2 className="text-2xl font-semibold tracking-tight">Ready when you are</h2>
           <p className="mx-auto mt-2 max-w-md text-sm text-muted">
-            Qualified participants receive access to their team's relay workspace from the organizers.
+            Qualified participants receive access to their Round 2 coding workspace from the organizers.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <Link to="/quiz" className="btn-primary px-6 py-3">Start Round 1</Link>

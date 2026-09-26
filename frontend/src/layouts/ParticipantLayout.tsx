@@ -15,8 +15,8 @@ export default function ParticipantLayout() {
             <NavLink to="/quiz" className={({ isActive }) => `rounded-lg px-3 py-1.5 ${isActive ? "text-text" : "text-muted hover:text-text"}`}>
               Quiz
             </NavLink>
-            <NavLink to="/team" className={({ isActive }) => `rounded-lg px-3 py-1.5 ${isActive ? "text-text" : "text-muted hover:text-text"}`}>
-              Team
+            <NavLink to="/round2" className={({ isActive }) => `rounded-lg px-3 py-1.5 ${isActive ? "text-text" : "text-muted hover:text-text"}`}>
+              Round 2
             </NavLink>
             <button
               className="rounded-lg px-3 py-1.5 text-muted hover:text-text transition-colors"

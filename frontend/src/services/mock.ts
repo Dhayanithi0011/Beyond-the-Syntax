@@ -54,8 +54,9 @@ const secs = (s: number) => s * 1000;
 
 const quizDeadline = () => new Date(t0 + mins(17) + secs(42)).toISOString();
 
-const member2Deadline = () => new Date(t0 + mins(7) + secs(23)).toISOString();
-const teamDeadline = () => new Date(t0 + mins(24) + secs(51)).toISOString();
+/* Round 2 is individual: one shared total timer per participant. */
+const round2StartedAt = () => new Date(t0 - mins(12) + secs(31)).toISOString();
+const round2Deadline = () => new Date(t0 + mins(24) + secs(51)).toISOString();
 
 /* ------------------------------------------------------------------ */
 /* Round 1 question bank                                               */
@@ -608,29 +609,6 @@ export const problemSets: { id: string; topic: string; questions: ContestProblem
   },
 ];
 
-/* Set assignment: fixed shuffled order at server load; a team's set index is
-   its rank mod 10 — so the first 10 teams cover all 10 sets, repeats only on
-   the 3rd round (team 11 = round 3) as requested. */
-const SET_ORDER: number[] = (() => {
-  const base = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-  for (let i = base.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [base[i], base[j]] = [base[j], base[i]];
-  }
-  return base;
-})();
-
-function teamRank(teamId: string): number {
-  const m = teamId.match(/^team-(\d+)$/);
-  if (!m) return 0;
-  /* workspaces use team-0; real teams are 1..N — map both into 0..9 */
-  return Math.max(parseInt(m[1], 10) - 1, 0);
-}
-
-function assignedSet(teamId: string) {
-  return problemSets[SET_ORDER[teamRank(teamId) % SET_ORDER.length]];
-}
-
 function findProblem(problemId: string): { problem: ContestProblem; position: number } | null {
   for (const set of problemSets) {
     const i = set.questions.findIndex((q) => q.id === problemId);
@@ -643,37 +621,60 @@ function findProblem(problemId: string): { problem: ContestProblem; position: nu
 /* Store                                                               */
 /* ------------------------------------------------------------------ */
 
-function randomTeamTime(): number {
-  return 20 * 60 + Math.floor(Math.random() * 600);
-}
+const R2_TOTAL_SECONDS = 45 * 60;
 
-function makeTeams() {
-  const TEAMS = [
-    ["Team Phoenix", "#F59E0B", "Utsav Patel", "Mira Shah", "Kabir Rao"],
-    ["Team Volt", "#22C55E", "Naina Iyer", "Rohit Menon", "Diya Kapoor"],
-    ["Team Quantum", "#6366F1", "Arjun Nair", "Sana Joshi", "Vikram Bhatt"],
-    ["Team Zero", "#A78BFA", "Kritika Das", "Harsh Gupta", "Ananya Pillai"],
-    ["Team Ember", "#F97316", "Tanvi Kulkarni", "Imran Sheikh", "Pooja Verma"],
-    ["Team Nimbus", "#38BDF8", "Dev Agarwal", "Ritika Jain", "Yash Thakur"],
+type R2Status = "not_started" | "active" | "completed" | "expired";
+
+const r2Remaining = () => Math.max(0, Math.round((new Date(round2Deadline()).getTime() - Date.now()) / 1000));
+
+/* Chaos-selected dealt set for the demo participant (individual round). */
+const SET_ORDER: number[] = (() => {
+  const base = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  for (let i = base.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [base[i], base[j]] = [base[j], base[i]];
+  }
+  return base;
+})();
+
+const DEMO_SET = problemSets[SET_ORDER[0] % problemSets.length];
+const DEMO_DEALT = DEMO_SET.questions.map((q) => q.id);
+
+/* Round 2 is individual — one session row per qualified participant. */
+function makeR2Rows() {
+  type Row = { name: string; code: string; setIdx: number; status: R2Status; current_index: number; scores: number[]; startedAgoMins: number };
+  const rows: Row[] = [
+    { name: "Sophia D'Souza", code: "P-1002", setIdx: 1, status: "completed", current_index: 3, scores: [200, 150, 200], startedAgoMins: 21 },
+    { name: "Anika Sen", code: "P-1006", setIdx: 2, status: "completed", current_index: 3, scores: [100, 200, 200], startedAgoMins: 22 },
+    { name: "Riya Nair", code: "P-1033", setIdx: 3, status: "expired", current_index: 1, scores: [100, 0, 0], startedAgoMins: 46 },
+    { name: "Aarav Mehta", code: "P-1024", setIdx: 0, status: "active", current_index: 0, scores: [0, 0, 0], startedAgoMins: 12 },
+    { name: "Ishaan Verma", code: "P-1001", setIdx: 4, status: "active", current_index: 1, scores: [200, 0, 0], startedAgoMins: 12 },
+    { name: "Kunal Sharma", code: "P-1003", setIdx: 5, status: "not_started", current_index: 0, scores: [0, 0, 0], startedAgoMins: 0 },
   ];
-  return TEAMS.map(([name, color, m1, m2, m3], i) => {
-    const status = i < 2 ? "active" : i === 2 ? "paused" : i === 3 ? "completed" : i === 4 ? "active" : "pending";
+  return rows.map((r, i) => {
+    const set = problemSets[SET_ORDER[r.setIdx % problemSets.length]];
+    const started = r.startedAgoMins > 0 ? t0 - mins(r.startedAgoMins) : t0;
+    const dealt = set.questions.map((q, k) => ({
+      q_number: k + 1,
+      problem_id: q.id,
+      title: q.title,
+      score: r.scores[k] ?? 0,
+      solved: (r.scores[k] ?? 0) > 0,
+    }));
     return {
-      id: `team-${i + 1}`,
-      name,
-      color,
-      members: [
-        { member_number: 1, name: m1, status: i < 2 ? "completed" : i === 2 ? "expired" : "not_started" },
-        { member_number: 2, name: m2, status: i < 2 ? "active" : i === 2 ? "paused" : "not_started" },
-        { member_number: 3, name: m3, status: "not_started" },
-      ],
-      status,
-      round2_access: i !== 5,
-      score: i === 3 ? 260 : i === 4 ? 180 : i === 5 ? 0 : i < 2 ? Math.floor(Math.random() * 90) + 100 : 90,
-      current_member_number: status === "completed" ? 3 : status === "active" ? (i === 4 ? 1 : 2) : status === "paused" ? 2 : 1,
-      current_problem: status === "completed" ? "Done" : `Problem ${status === "paused" ? 2 : i === 4 ? 1 : 2}`,
-      time_remaining_ms: status === "completed" ? 0 : status === "paused" ? mins(9) + secs(40) : status === "active" ? (i === 4 ? secs(41) + secs(0) : mins(6) + secs(12)) : undefined,
-      team_time_seconds: status === "completed" ? randomTeamTime() : undefined,
+      id: `r2s-${i + 1}`,
+      participant_id: `r2p-${i + 1}`,
+      participant_code: r.code,
+      name: r.name,
+      status: r.status,
+      started_at: new Date(started).toISOString(),
+      deadline: new Date(started + R2_TOTAL_SECONDS * 1000).toISOString(),
+      time_remaining_seconds: r.status === "active" ? Math.max(0, Math.round((started + R2_TOTAL_SECONDS * 1000 - Date.now()) / 1000)) : null,
+      current_index: r.current_index,
+      total_questions: 3,
+      dealt,
+      score: dealt.reduce((s, d) => s + d.score, 0),
+      solved_count: dealt.filter((d) => d.solved).length,
     };
   });
 }
@@ -686,12 +687,12 @@ export const store = {
     state: "round2_active",
     registration_open: false,
     round1_duration_seconds: 1800,
-    round2_team_duration_seconds: 1800,
-    round2_early_handoff_allowed: true,
+    round2_team_duration_seconds: R2_TOTAL_SECONDS,
+    round2_early_handoff_allowed: false,
     round1_questions: questionBank.length,
-    round2_problems: problemSets[0].questions.length,
+    round2_problems: DEMO_DEALT.length,
     opens_at: new Date(t0 - mins(40)).toISOString(),
-    round2_ends_at: new Date(t0 + mins(24) + secs(51)).toISOString(),
+    round2_ends_at: round2Deadline(),
     participants_accepted: 128,
     colleges: 9,
   },
@@ -711,57 +712,46 @@ export const store = {
     incorrect_count: null as number | null,
   },
 
-  team: {
-    id: "team-0",
-    name: "Team Alpha",
-    color: "#6366F1",
-    icon: "⚡",
-    status: "active",
-    round2_access: true,
-    current_member_number: 2,
-    members: [
-      { member_number: 1, name: "Ishaan Verma", participant_code: "P-1001", status: "completed" },
-      { member_number: 2, name: "Aarav Mehta", participant_code: "P-1024", status: "active" },
-      { member_number: 3, name: "Riya Nair", participant_code: "P-1033", status: "not_started" },
-    ],
-    session: {
-      team_started_at: new Date(t0 - mins(5) + secs(9)).toISOString(),
-      team_deadline: teamDeadline(),
-      member_started_at: new Date(t0 - mins(2) + secs(37)).toISOString(),
-      member_deadline: member2Deadline(),
-      status: "active",
-    },
+  /* This demo participant's individual Round 2 session (strict Q1→Q2→Q3). */
+  round2: {
+    id: "r2s-demo",
+    participant_id: demoParticipant.id,
+    status: "active" as R2Status,
+    started_at: round2StartedAt(),
+    deadline: round2Deadline(),
+    current_index: 0,
+    total_questions: DEMO_DEALT.length,
+    problem_ids: DEMO_DEALT,
+    solved: {} as Record<string, number>,
+    qualified: true,
+    qualification_status: "qualified",
   },
 
-  drafts: {} as Record<string, { language: string; source_code: string }>,
+  drafts: {} as Record<string, { language: string; languages?: Record<string, string>; source_code: string }>,
   submissions: [] as unknown[],
 
-  adminTeams: makeTeams(),
+  rounds2: makeR2Rows(),
   adminLive: {
     online_count: 42,
     submitted_count: 8,
-    teams_coding: 6,
-    teams: [] as unknown[],
+    coding_now: 3,
+    competition_state: "round2_active",
+    sessions: [] as unknown[],
   },
 };
 
-store.adminLive.teams = makeTeams().map((t, i) => ({
-  ...t,
-  id: `team-${i + 1}`,
-}));
+store.adminLive.sessions = store.rounds2;
 
-const demoSet = assignedSet("team-0");
-const demoQuestions = demoSet.questions;
-const demoProblem = demoQuestions[0];
+const demoHistoryProblem = problemSets[SET_ORDER[2] % problemSets.length].questions[0];
 const demoSub = (id: string, status: "accepted" | "wrong_answer" | "tle", execMs: number, scoreFraction: number, sec: number) => ({
   id,
-  problem_id: demoProblem.id,
-  problem_title: demoProblem.title,
+  problem_id: demoHistoryProblem.id,
+  problem_title: demoHistoryProblem.title,
   language: "cpp",
   status,
   execution_time_ms: execMs,
   memory_kb: status === "tle" ? 18220 : 18640,
-  score: Math.round(demoProblem.max_score * scoreFraction),
+  score: Math.round(demoHistoryProblem.max_score * scoreFraction),
   submitted_at: new Date(t0 - mins(4) + secs(sec)).toISOString(),
 });
 export const submissionsDemo = [demoSub("s1", "accepted", 842, 1, 12), demoSub("s2", "wrong_answer", 451, 0.4, 44), demoSub("s3", "tle", 2004, 0.1, 30)];
@@ -865,9 +855,29 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
         { title: "Eligibility", body: "Open to all enrolled undergraduate students. One registration per participant." },
         { title: "Round 1 — Individual Quiz", body: "A timed technical MCQ round (30 minutes). Each participant receives a randomized question and option order. Questions are auto-submitted when the timer ends." },
         { title: "Qualification", body: "Only top performers, as decided by the organizing committee, qualify for Round 2. The leaderboard ranks by score, then by fastest submission." },
-        { title: "Round 2 — Coding Relay", body: "Qualified participants form teams of 3. Each member solves one problem in relay order within a shared team budget of 30 minutes. Members may hand off early." },
-        { title: "Fair Play", body: "Collaboration is strictly within your own team and only during your own turn. Browser activity is logged. All grading decisions by the committee are final." },
+        { title: "Round 2 — Individual Coding Sprint", body: "Qualified participants compete individually. Each participant is dealt 3 coding problems (Q1, Q2, Q3) that must be solved in strict order within a shared 45-minute budget. Questions open one at a time; each submission locks that question and opens the next, and finishing early ends your round." },
+        { title: "Fair Play", body: "All work must be your own. Only the currently unlocked question is interactable, and browser activity is logged throughout Round 2. All grading decisions by the committee are final." },
       ],
+    });
+  }
+
+  /* ----- Round 2 status ----- */
+  if (url === "/round2/status" && method === "get") {
+    const s = store.round2;
+    return respond({
+      qualified: s.qualified,
+      qualification_status: s.qualification_status,
+      your_participant_code: demoParticipant.participant_code,
+      competition_state: store.competition.state,
+      round2_duration_seconds: store.competition.round2_team_duration_seconds,
+      session: {
+        status: s.status,
+        started_at: s.started_at,
+        deadline: s.deadline,
+        time_remaining_seconds: r2Remaining(),
+        current_index: s.current_index,
+        total_questions: s.total_questions,
+      },
     });
   }
 
@@ -913,32 +923,46 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     return respond({ entries: sortedLeaderboard, updated_at: new Date().toISOString() });
   }
 
-  /* ----- Round 2 team ----- */
-  if (/^\/teams\/[^/]+$/.test(url) && method === "get") {
-    return respond({ team: store.team });
-  }
-  if (/^\/teams\/[^/]+\/handoff$/.test(url) && method === "post") {
-    return respond({ ok: true, current_member_number: 3, message: "Handoff successful — Member 3 is now active." });
-  }
-
-  /* ----- coding ----- */
+  /* ----- Round 2 coding (individual, strict Q1→Q2→Q3) ----- */
   if (url === "/coding/complete" && method === "post") {
-    return respond({ ok: true, completed: true, message: "Round 2 complete — your team's share of time ends here." });
+    store.round2.status = "completed";
+    return respond({ completed: true, message: "Round 2 complete — your remaining time has ended here." });
   }
   if (url === "/coding/problems" && method === "get") {
-    const set = assignedSet(store.team.id);
-    return respond({
-      set: { id: set.id, topic: set.topic },
-      problems: set.questions.map((p, i) => ({
-        id: p.id,
+    const s = store.round2;
+    const problems = s.problem_ids.map((pid, i) => {
+      const found = findProblem(pid)!;
+      const p = found.problem;
+
+      const score = s.solved[pid] ?? 0;
+      return {
+        id: pid,
         title: p.title,
-        position: i + 1,
+        position: found.position,
+        q_number: i + 1,
         domain: p.domain,
+        difficulty: p.difficulty,
         max_score: p.max_score,
-        solved: i === 0,
-        score: i === 0 ? p.max_score : 0,
-      })),
-      session: store.team.session,
+        solved: score > 0,
+        score,
+        unlocked: i <= s.current_index,
+      };
+    });
+    return respond({
+      kind: "round2",
+      session: {
+        status: s.status,
+        started_at: s.started_at,
+        deadline: s.deadline,
+        time_remaining_seconds: r2Remaining(),
+        current_index: s.current_index,
+        total_questions: s.total_questions,
+      },
+      participant: {
+        name: demoParticipant.name,
+        participant_code: demoParticipant.participant_code,
+      },
+      problems,
     });
   }
   const problemMatch = url.match(/^\/coding\/problems\/([\w-]+)$/);
@@ -946,28 +970,35 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     const found = findProblem(problemMatch[1]);
     if (!found) return Promise.reject({ error: "NOT_FOUND", message: "Problem not found." });
     const p = found.problem;
-    const draft = store.drafts[p.id] ?? { language: "cpp", source_code: GENERIC_STARTERS.cpp };
+    const draft = store.drafts[p.id] ?? { language: "python", languages: { python: GENERIC_STARTERS.python }, source_code: "" };
     return respond({
       problem: {
         id: p.id,
         title: p.title,
         position: found.position,
         domain: p.domain,
+        difficulty: p.difficulty,
         statement_md: p.statement_md,
         constraints_md: p.constraints_md,
         time_limit_ms: p.time_limit_ms,
         memory_limit_mb: p.memory_limit_mb,
         max_score: p.max_score,
         sample_cases: p.sample_cases,
-        test_cases: p.test_cases,
+        direct_cases: p.test_cases,
+        test_cases: [],
       },
-      draft: { ...draft, last_edited_by: "Ishaan Verma", updated_at: new Date(t0 - mins(2) + secs(14)).toISOString() },
+      draft: { language: draft.language, languages: draft.languages ?? {}, source_code: draft.source_code },
     });
   }
   const hasSource = (src?: string) => !!src && /\S/.test(src) && !/\bTODO\b/.test(src) && !/\bplaceholder\b/i.test(src);
   if (url === "/coding/save" && method === "post") {
-    store.drafts[body.problem_id] = { language: body.language, source_code: body.source_code };
-    return respond({ saved_at: new Date().toISOString() });
+    const prev = store.drafts[body.problem_id];
+    store.drafts[body.problem_id] = {
+      language: body.language,
+      languages: { ...(prev?.languages ?? {}), [body.language]: body.source_code },
+      source_code: body.source_code,
+    };
+    return respond({ saved: true, saved_at: new Date().toISOString() });
   }
   if (url === "/coding/run" && method === "post") {
     const found = findProblem(body.problem_id);
@@ -983,7 +1014,7 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
         execution_time_ms: 320,
         memory_kb: 18420,
         cases: [],
-        judged: "real",
+        judge: "real",
       });
     }
 
@@ -1007,7 +1038,7 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
           execution_time_ms: res.compile_ms ?? 0,
           memory_kb: 18420,
           cases: [],
-          judged: "real",
+          judge: "real",
         });
       } else {
         res.outcomes.forEach((o, i) => {
@@ -1060,9 +1091,8 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
       stderr,
       execution_time_ms,
       memory_kb: 18240,
-      sample_visible: true,
       cases,
-      judged: simulated ? "simulated" : "real",
+      judge: simulated ? "simulated" : "real",
     });
   }
   if (url === "/coding/submit" && method === "post") {
@@ -1128,10 +1158,23 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
       status: verdict,
       execution_time_ms,
       memory_kb: 18720,
-      score: Math.round(found.problem.max_score * (passed / Math.max(total, 1))),
+      score: verdict === "accepted" ? found.problem.max_score : 0,
       submitted_at: new Date().toISOString(),
     };
     store.submissions.unshift(submission);
+
+    /* Strict order: any verdict still moves the pointer to the next dealt
+     * question; submitting Q3 completes the session. */
+    const qindex = store.round2.problem_ids.indexOf(body.problem_id);
+    if (qindex >= 0 && qindex === store.round2.current_index) {
+      const prev = store.round2.solved[body.problem_id] ?? 0;
+      store.round2.solved[body.problem_id] = Math.max(prev, submission.score);
+      store.round2.current_index += 1;
+      if (store.round2.current_index >= store.round2.total_questions) {
+        store.round2.status = "completed";
+      }
+    }
+
     return respond({
       submission_id: submission.id,
       status: verdict,
@@ -1140,9 +1183,9 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
       score: submission.score,
       passed,
       total,
-      message: verdict === "accepted" ? "All hidden test cases passed." : "Some hidden test cases failed.",
-      stderr_hint: stderrHint || undefined,
-      judged: simulated ? "simulated" : "real",
+      judge: simulated ? "simulated" : "real",
+      completed: store.round2.status === "completed",
+      current_index: store.round2.current_index,
     });
   }
   if (url === "/coding/submissions" && method === "get") {
@@ -1151,25 +1194,34 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     return respond({ submissions: subs });
   }
   if (url === "/leaderboard/round2" && method === "get") {
-    const teams = makeTeams().map((t, i) => ({ ...t, id: `team-${i + 1}` }));
-    const entries = teams
-      .filter((t) => t.score > 0 || t.status === "completed")
-      .sort((a, b) => b.score - a.score || (a.team_time_seconds ?? 9999) - (b.team_time_seconds ?? 9999))
-      .map((t, i) => ({ rank: i + 1, team_id: t.id, name: t.name, color: t.color, score: t.score, time_seconds: t.team_time_seconds ?? 0, status: t.status }));
+    const entries = store.rounds2
+      .filter((s: any) => s.score > 0 || s.status === "active" || s.status === "completed")
+      .map((s: any) => ({
+        rank: 0,
+        participant_id: s.participant_id,
+        name: s.name,
+        participant_code: s.participant_code,
+        score: s.score,
+        time_seconds: s.status === "completed" ? 1210 + Math.floor(Math.random() * 300) : 0,
+        status: s.status,
+      }));
+    entries.sort((a: any, b: any) => b.score - a.score || a.time_seconds - b.time_seconds);
+    entries.forEach((e: any, i: number) => (e.rank = i + 1));
     return respond({ entries, updated_at: new Date().toISOString() });
   }
 
   /* ----- admin ----- */
   if (url === "/admin/dashboard" && method === "get") {
-    const qualified = r1Participants.filter((p) => p.qualification_status === "qualified");
+    const sessions = store.rounds2 as any[];
     return respond({
       stats: {
         total_participants: 128,
         quiz_completed: 96,
         qualified: 24,
-        teams_created: 6,
-        active_teams: 3,
-        completed_teams: 1,
+        round2_sessions: sessions.length,
+        active_round2: sessions.filter((s) => s.status === "active").length,
+        completed_round2: sessions.filter((s) => s.status === "completed").length,
+        expired_round2: sessions.filter((s) => s.status === "expired").length,
         avg_quiz_score: 14.6,
         highest_quiz_score: 20,
         total_submissions: 48,
@@ -1183,11 +1235,11 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
         { range: "17–20", count: 16 },
       ],
       recent_activity: [
-        { id: 1, actor: "Dr. Sarah Lin", action: "TEAM_STARTED", target: "Team Phoenix", at: new Date(t0 - secs(90)).toISOString() },
-        { id: 2, actor: "Utsav Patel", action: "MEMBER_HANDOFF", target: "Team Phoenix · M1 → M2", at: new Date(t0 - secs(300)).toISOString() },
-        { id: 3, actor: "System", action: "CODE_SUBMITTED", target: "Team Volt · Problem 2", at: new Date(t0 - secs(480)).toISOString() },
-        { id: 4, actor: "Dr. Sarah Lin", action: "ROUND2_ACCESS_GRANTED", target: "Team Quantum", at: new Date(t0 - mins(12)).toISOString() },
-        { id: 5, actor: "Sem Automation", action: "QUIZ_SUBMITTED", target: "P-1011 · 10/20", at: new Date(t0 - mins(18)).toISOString() },
+        { id: 1, actor: "Dr. Sarah Lin", action: "ROUND2_STARTED", target: "Individual Round 2 launched", at: new Date(t0 - secs(90)).toISOString() },
+        { id: 2, actor: "Aarav Mehta", action: "CODE_SUBMITTED", target: "P-1024 · Problem 1", at: new Date(t0 - secs(300)).toISOString() },
+        { id: 3, actor: "Anika Sen", action: "ROUND2_COMPLETED", target: "P-1006 · finished early", at: new Date(t0 - secs(480)).toISOString() },
+        { id: 4, actor: "Sem Automation", action: "QUIZ_SUBMITTED", target: "P-1011 · 10/20", at: new Date(t0 - mins(12)).toISOString() },
+        { id: 5, actor: "System", action: "PARTICIPANTS_QUALIFIED", target: "24 granted Round 2 access", at: new Date(t0 - mins(18)).toISOString() },
       ],
     });
   }
@@ -1206,37 +1258,61 @@ export async function demoAdapter(config: AxiosRequestConfig): Promise<AxiosResp
     });
   }
   if (url === "/admin/participants" && method === "get") {
+    const sessionByCode = Object.fromEntries(store.rounds2.map((s: any) => [s.participant_code, s]));
     return respond({
-      participants: r1Participants.map((p) => ({
-        id: p.id,
-        participant_code: p.participant_code,
-        name: p.name,
-        email: `${p.name.toLowerCase().replace(/[^a-z]+/g, ".")}@college.edu`,
-        department: p.department,
-        year: p.year,
-        quiz_status: p.status,
-        score: p.status === "not_submitted" ? null : p.score,
-        submitted_at: p.status === "not_submitted" ? null : new Date(t0 - mins(3) - p.time_taken_seconds * 1000).toISOString(),
-        qualification_status: p.qualification_status,
-      })),
+      participants: r1Participants.map((p, i) => {
+        const row = sessionByCode[p.participant_code];
+        return {
+          id: p.id,
+          participant_code: p.participant_code,
+          name: p.name,
+          email: `${p.name.toLowerCase().replace(/[^a-z]+/g, ".")}@college.edu`,
+          department: p.department,
+          year: p.year,
+          quiz_status: p.status,
+          score: p.status === "not_submitted" ? null : p.score,
+          submitted_at: p.status === "not_submitted" ? null : new Date(t0 - mins(3) - p.time_taken_seconds * 1000).toISOString(),
+          qualification_status: p.qualification_status,
+          round2_status: row?.status ?? null,
+          round2_solved: row?.solved_count ?? 0,
+          tab_switches: {
+            round1: (i + 1) % 5 === 0 ? 2 : 0,
+            round2: (i + 1) % 7 === 0 ? 1 : 0,
+          },
+        };
+      }),
     });
   }
   if (url === "/admin/qualify" && method === "post") {
-    return respond({ updated: body.participant_ids?.length ?? 0 });
+    return respond({ qualified: body.participant_ids?.length ?? 0 });
   }
-  if (url === "/admin/teams" && method === "get") {
-    return respond({ teams: store.adminTeams });
+  if (url === "/admin/round2" && method === "get") {
+    return respond({
+      sessions: store.rounds2,
+      competition_state: store.competition.state,
+      round2_duration_seconds: store.competition.round2_team_duration_seconds,
+    });
   }
-  if (url === "/admin/teams" && method === "post") {
-    const t = { id: `team-${Date.now()}`, name: body.name ?? "New Team", color: "#6366F1", members: body.member_names ?? [], status: "pending", round2_access: false, score: 0, current_member_number: 0 };
-    store.adminTeams.push(t as any);
-    return respond(t, 201);
+  if (url === "/admin/round2/start" && method === "post") {
+    store.competition.state = "round2_active";
+    return respond({ started: 24, total_sessions: 24, deadline: store.round2.deadline });
   }
-  if (/^\/admin\/teams\/[\w-]+\/(grant-access|revoke-access|activate|pause|resume|reset)$/.test(url) && method === "post") {
-    return respond({ ok: true });
+  if (url === "/admin/round2/close" && method === "post") {
+    store.competition.state = "round2_closed";
+    return respond({ state: "round2_closed" });
+  }
+  if (/^\/admin\/round2\/([\w-]+)\/reset$/.test(url) && method === "post") {
+    return respond({ reset: true, status: "active" });
   }
   if (url === "/admin/live" && method === "get") {
-    return respond(store.adminLive);
+    const sessions = (store.rounds2 as any[]).filter((s) => s.status === "active" || s.status === "completed" || s.status === "expired");
+    return respond({
+      online_count: 42,
+      submitted_count: 16,
+      coding_now: sessions.filter((s) => s.status === "active").length,
+      competition_state: store.competition.state,
+      sessions,
+    });
   }
 
   /* fallback */

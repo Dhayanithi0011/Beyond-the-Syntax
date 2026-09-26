@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, Integer, Boolean, ForeignKey, Enum, Text, JSON,
-    DateTime, UniqueConstraint, func, text
+    DateTime, Index, UniqueConstraint, func, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
@@ -216,6 +216,28 @@ class TeamSession(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
 
+class Round2Session(Base):
+    """Individual Round-2 session: every qualified participant is dealt QUESTION_COUNT
+    coding problems (round-robin from the shuffled problem deck) and solves them in
+    strict order under one shared total timer (common `deadline` across participants)."""
+    __tablename__ = "round2_sessions"
+    __table_args__ = (
+        UniqueConstraint("participant_id", "competition_id"),
+    )
+    id = uuid_pk()
+    participant_id = Column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=False)
+    competition_id = Column(UUID(as_uuid=True), ForeignKey("competitions.id"), nullable=False)
+    problem_ids = Column(JSON, nullable=True)           # dealt order [Q1, Q2, Q3]
+    current_index = Column(Integer, nullable=False, server_default=text("0"))
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    deadline = Column(DateTime(timezone=True), nullable=True)
+    status = Column(Enum(SessionStatus, name="session_status"), default=SessionStatus.not_started)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+    participant = relationship("Participant")
+
+
 class CodingProblem(Base):
     __tablename__ = "coding_problems"
     id = uuid_pk()
@@ -245,9 +267,14 @@ class TestCase(Base):
 
 class CodeDraft(Base):
     __tablename__ = "code_drafts"
-    __table_args__ = (UniqueConstraint("team_id", "problem_id"),)
+    __table_args__ = (
+        UniqueConstraint("team_id", "problem_id"),
+        Index("uq_code_drafts_participant_problem", "participant_id", "problem_id",
+              unique=True, postgresql_where=text("participant_id IS NOT NULL")),
+    )
     id = uuid_pk()
-    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    participant_id = Column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True)
     problem_id = Column(UUID(as_uuid=True), ForeignKey("coding_problems.id"), nullable=False)
     language = Column(String, nullable=False)
     source_code = Column(Text, default="")
@@ -259,9 +286,10 @@ class CodeDraft(Base):
 class Submission(Base):
     __tablename__ = "submissions"
     id = uuid_pk()
-    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    participant_id = Column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True)
     problem_id = Column(UUID(as_uuid=True), ForeignKey("coding_problems.id"), nullable=False)
-    member_id = Column(UUID(as_uuid=True), ForeignKey("team_members.id"), nullable=False)
+    member_id = Column(UUID(as_uuid=True), ForeignKey("team_members.id"), nullable=True)
     language = Column(String, nullable=False)
     source_code = Column(Text, nullable=False)
     status = Column(Enum(SubmissionStatus, name="submission_status"), nullable=False)

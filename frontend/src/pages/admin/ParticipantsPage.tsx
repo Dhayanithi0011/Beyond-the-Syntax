@@ -15,7 +15,8 @@ type Participant = {
   score: number | null;
   submitted_at: string | null;
   qualification_status: string;
-  team: string | null;
+  round2_status: string;
+  round2_solved: number;
   tab_switches: { round1: number; round2: number };
 };
 
@@ -100,7 +101,7 @@ export default function ParticipantsPage() {
             <input type="checkbox" className="accent-primary" checked={selected.size > 0 && selected.size === filtered.length} onChange={toggleAll} aria-label="Select all" />
             <span>ID</span>
             <span>Name</span>
-            <span>Team</span>
+            <span>Round 2</span>
             <span>Dept / Year</span>
             <span>Quiz</span>
             <span>Score</span>
@@ -131,16 +132,12 @@ export default function ParticipantsPage() {
                   </p>
                 )}
               </div>
-              <span className={p.team ? "flex items-center gap-1.5 truncate text-xs font-medium" : "text-xs text-muted/50"}>
-                {p.team ? (
-                  <>
-                    <span className="grid h-4 w-4 shrink-0 place-items-center rounded bg-primary/15 text-[9px] text-primary">⚡</span>
-                    <span className="truncate">{p.team}</span>
-                  </>
-                ) : (
-                  "—"
-                )}
-              </span>
+              <span className="min-w-0 text-xs">
+                  <StatusBadge status={p.round2_status} />
+                  {p.round2_solved > 0 && (
+                    <span className="mt-1 block font-mono text-muted">{p.round2_solved} solved</span>
+                  )}
+                </span>
               <span className="text-xs text-muted">{p.department} · Y{p.year}</span>
               <StatusBadge status={p.quiz_status} />
               <span className="font-mono text-sm lg:text-right">{p.score !== null ? `${p.score}/30` : "—"}</span>

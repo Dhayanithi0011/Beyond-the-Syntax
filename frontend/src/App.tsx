@@ -11,13 +11,13 @@ import AuthPage from "./pages/public/AuthPage";
 import QuizLobbyPage from "./pages/round1/QuizLobbyPage";
 import QuizPage from "./pages/round1/QuizPage";
 
-import TeamLobbyPage from "./pages/round2/TeamLobbyPage";
+import Round2LobbyPage from "./pages/round2/Round2LobbyPage";
 import CodingWorkspacePage from "./pages/round2/CodingWorkspacePage";
 
 import AdminDashboardPage from "./pages/admin/DashboardPage";
 import AdminQuestionsPage from "./pages/admin/QuestionsPage";
 import AdminParticipantsPage from "./pages/admin/ParticipantsPage";
-import AdminTeamsPage from "./pages/admin/TeamsPage";
+import AdminRound2Page from "./pages/admin/Round2Page";
 import AdminLeaderboardPage from "./pages/admin/LeaderboardPage";
 import AdminLiveMonitorPage from "./pages/admin/LiveMonitorPage";
 
@@ -40,11 +40,11 @@ export default function App() {
       <Route element={<ProtectedRoute role="participant" />}>
         <Route element={<ParticipantLayout />}>
           <Route path="/quiz" element={<QuizLobbyPage />} />
-          <Route path="/team" element={<TeamLobbyPage />} />
+          <Route path="/round2" element={<Round2LobbyPage />} />
         </Route>
         <Route path="/quiz/attempt" element={<QuizPage />} />
         {/* Round 2 workspace — immersive full-screen IDE */}
-        <Route path="/team/workspace" element={<CodingWorkspacePage />} />
+        <Route path="/coding" element={<CodingWorkspacePage />} />
       </Route>
 
       {/* Admin console */}
@@ -54,7 +54,7 @@ export default function App() {
           <Route index element={<AdminDashboardPage />} />
           <Route path="questions" element={<AdminQuestionsPage />} />
           <Route path="participants" element={<AdminParticipantsPage />} />
-          <Route path="teams" element={<AdminTeamsPage />} />
+          <Route path="round2" element={<AdminRound2Page />} />
           <Route path="leaderboard" element={<AdminLeaderboardPage />} />
           <Route path="live" element={<AdminLiveMonitorPage />} />
         </Route>

@@ -18,9 +18,9 @@ type R1Entry = {
 
 type R2Entry = {
   rank: number;
-  team_id: string;
+  participant_id: string;
+  participant_code: string;
   name: string;
-  color: string;
   score: number;
   time_seconds: number;
   status: string;
@@ -97,7 +97,7 @@ export default function AdminLeaderboardPage() {
             onChange={setTab}
             options={[
               { value: "round1", label: "Round 1 · Quiz" },
-              { value: "round2", label: "Round 2 · Relay" },
+              { value: "round2", label: "Round 2 · Individual" },
             ]}
           />
         }
@@ -174,28 +174,34 @@ export default function AdminLeaderboardPage() {
         <TableSkeleton rows={8} cols={4} />
       ) : (
         <div className="card overflow-hidden">
-          <div className="grid grid-cols-[3rem_1fr_auto_auto] items-center gap-4 border-b border-line bg-soft px-5 py-3 text-xs font-medium uppercase tracking-wider text-muted sm:grid-cols-[3rem_1fr_6rem_6rem]">
+          <div className="grid grid-cols-[3rem_1fr_auto_auto_auto] items-center gap-4 border-b border-line bg-soft px-5 py-3 text-xs font-medium uppercase tracking-wider text-muted">
             <span>Rank</span>
-            <span>Team</span>
-            <span className="text-right">Score</span>
+            <span>Participant</span>
+            <span className="text-right">Status</span>
             <span className="text-right">Time</span>
+            <span className="text-right">Score</span>
           </div>
           {r2.map((e) => (
             <div
-              key={e.team_id}
-              className="grid grid-cols-[3rem_1fr_auto_auto] items-center gap-4 border-b border-line px-5 py-4 text-sm last:border-0 hover:bg-soft sm:grid-cols-[3rem_1fr_6rem_6rem]"
+              key={e.participant_id}
+              className="grid grid-cols-[3rem_1fr_auto_auto_auto] items-center gap-4 border-b border-line px-5 py-4 text-sm last:border-0 hover:bg-soft"
             >
               <span className="font-mono font-semibold">{MEDAL(e.rank)}</span>
               <span className="flex items-center gap-3">
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg" style={{ background: `${e.color}20`, color: e.color }} aria-hidden>▲</span>
-                <span className="font-medium" style={{ color: e.color }}>{e.name}</span>
-                {e.status === "completed" && <Badge tone="success">Done</Badge>}
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary" aria-hidden>{"</>"}</span>
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">{e.name}</span>
+                  <span className="block font-mono text-xs text-muted">{e.participant_code}</span>
+                </span>
               </span>
-              <span className="text-right font-mono font-semibold text-primary">{e.score.toLocaleString()}</span>
+              <span className="text-right text-muted">
+                <StatusBadge status={e.status} />
+              </span>
               <span className="text-right font-mono text-muted">⏱ {fmtTime(e.time_seconds)}</span>
+              <span className="w-16 text-right font-mono font-semibold text-primary">{e.score.toLocaleString()}</span>
             </div>
           ))}
-          {r2.length === 0 && <p className="px-5 py-10 text-center text-sm text-muted">No team submissions yet.</p>}
+          {r2.length === 0 && <p className="px-5 py-10 text-center text-sm text-muted">No Round 2 submissions yet.</p>}
         </div>
       )}
     </div>

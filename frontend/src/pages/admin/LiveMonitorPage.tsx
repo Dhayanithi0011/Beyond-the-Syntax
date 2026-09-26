@@ -3,26 +3,30 @@ import { api } from "../../services/api";
 import { StatusBadge } from "../../components/ui";
 import { TableSkeleton } from "../../components/Skeleton";
 
-type LiveTeam = {
+type LiveSession = {
   id: string;
+  participant_code: string;
   name: string;
-  color: string;
-  status: string;
+  status: "not_started" | "active" | "completed" | "expired";
+  started_at: string | null;
+  deadline: string | null;
+  time_remaining_seconds: number | null;
+  current_index: number;
+  total_questions: number;
   score: number;
-  current_member_number: number;
-  current_problem?: string;
-  time_remaining_ms?: number;
-  members?: { member_number: number; name: string; status: string }[];
+  solved_count: number;
+  dealt: { q_number: number; problem_id: string; title: string; score: number; solved: boolean }[];
 };
 
 type Live = {
   online_count: number;
   submitted_count: number;
-  teams_coding: number;
-  teams: LiveTeam[];
+  coding_now: number;
+  competition_state: string;
+  sessions: LiveSession[];
 };
 
-function TeamClock({ endAt }: { endAt: number }) {
+function SessionClock({ endAt }: { endAt: number }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -35,14 +39,6 @@ function TeamClock({ endAt }: { endAt: number }) {
   return <span className={`font-mono text-lg font-semibold tabular-nums ${low ? "text-danger animate-pulse" : "text-text"}`}>{m}:{s}</span>;
 }
 
-const M_LABEL: Record<string, string> = {
-  not_started: "bg-soft",
-  active: "bg-success",
-  completed: "bg-primary",
-  expired: "bg-danger",
-  paused: "bg-warning",
-};
-
 export default function LiveMonitorPage() {
   const [live, setLive] = useState<Live | null>(null);
 
@@ -53,53 +49,58 @@ export default function LiveMonitorPage() {
     return () => clearInterval(id);
   }, []);
 
-  const endAtFor = (t: LiveTeam) => (t.time_remaining_ms != null ? Date.now() + t.time_remaining_ms : null);
-
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Live Monitor</h1>
-          <p className="mt-1 text-sm text-muted">Coding relay in progress — auto-refreshes every 5 seconds.</p>
+          <p className="mt-1 text-sm text-muted">Individual Round 2 in progress — auto-refreshes every 5 seconds.</p>
         </div>
         {live && (
           <div className="flex items-center gap-2 text-xs">
             <span className="inline-flex items-center gap-1.5 text-muted"><span className="h-2 w-2 rounded-full bg-success" /> {live.online_count} online</span>
             <span className="inline-flex items-center gap-1.5 text-muted"><span className="h-2 w-2 rounded-full bg-warning" /> {live.submitted_count} submitted</span>
-            <span className="inline-flex items-center gap-1.5 text-muted"><span className="h-2 w-2 rounded-full bg-primary" /> {live.teams_coding} teams coding</span>
+            <span className="inline-flex items-center gap-1.5 text-muted"><span className="h-2 w-2 rounded-full bg-primary" /> {live.coding_now} coding now</span>
           </div>
         )}
       </div>
 
       {!live ? (
         <TableSkeleton rows={4} cols={3} />
+      ) : live.sessions.length === 0 ? (
+        <div className="card grid place-items-center px-6 py-16 text-center">
+          <div className="mb-3 text-3xl" aria-hidden>📡</div>
+          <h3 className="font-semibold text-text">No Round 2 sessions</h3>
+          <p className="mt-1 max-w-sm text-sm text-muted">Sessions appear here once the round is started for qualified participants.</p>
+        </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          {live.teams.map((t) => {
-            const endAt = endAtFor(t);
+          {live.sessions.map((t) => {
             const active = t.status === "active";
+            const endAt = t.deadline ? new Date(t.deadline).getTime() : null;
             return (
               <div key={t.id} className={`card p-5 animate-fade-in ${active ? "border-success/30" : ""}`}>
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="grid h-9 w-9 place-items-center rounded-lg" style={{ background: `${t.color}1f`, color: t.color }} aria-hidden>
-                      ▲
-                    </span>
-                    <p className="font-semibold" style={{ color: t.color }}>{t.name}</p>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary" aria-hidden>{"</>"}</span>
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold">{t.name}</p>
+                      <p className="font-mono text-[11px] text-muted">{t.participant_code}</p>
+                    </div>
                   </div>
                   <StatusBadge status={t.status} />
                 </div>
 
-                <div className="mt-4 flex items-center justify-between rounded-lg border border-line bg-soft px-4 py-3">
+                <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-line bg-soft px-4 py-3">
                   <div>
                     <p className="text-[10px] uppercase tracking-wider text-muted">
-                      {t.status === "completed" ? "Status" : `Member ${t.current_member_number} · ${t.current_problem ?? ""}`}
+                      {t.status === "active" ? `Shared timer · Q${t.current_index + 1 || "?"}` : "Status"}
                     </p>
-                    {t.status === "active" && endAt ? (
-                      <TeamClock endAt={endAt} />
+                    {active && endAt ? (
+                      <SessionClock endAt={endAt} />
                     ) : (
                       <p className="font-mono text-lg font-semibold text-muted">
-                        {t.status === "completed" ? "Done ✓" : t.status === "paused" ? "Paused" : "Awaiting start"}
+                        {t.status === "completed" ? "Done ✓" : t.status === "expired" ? "Time up" : "Awaiting start"}
                       </p>
                     )}
                   </div>
@@ -109,19 +110,25 @@ export default function LiveMonitorPage() {
                   </div>
                 </div>
 
-                {t.members && (
-                  <div className="mt-4 flex items-center justify-center gap-4" aria-label="Member status">
-                    {t.members.map((m) => (
-                      <div key={m.member_number} className="flex flex-col items-center gap-1.5">
-                        <span className={`h-3 w-3 rounded-full ${M_LABEL[m.status] ?? "bg-soft"}`} aria-hidden />
-                        <span className="text-[10px] text-muted">M{m.member_number}</span>
+                <div className="mt-4 flex items-center justify-center gap-4" aria-label="Dealt problems">
+                  {Array.from({ length: Math.max(t.total_questions, 3) }, (_, i) => i + 1).map((n) => {
+                    const dealt = t.dealt.find((d) => d.q_number === n);
+                    const solved = dealt?.solved;
+                    const at = n <= t.current_index;
+                    return (
+                      <div key={n} className="flex flex-col items-center gap-1.5">
+                        <span
+                          className={`grid h-2.5 w-10 place-items-center rounded-full ${solved ? "bg-success" : at && active ? "bg-primary" : "bg-line/70"}`}
+                          aria-hidden
+                        />
+                        <span className="text-[10px] text-muted">Q{n}</span>
                       </div>
-                    ))}
-                    <span className="ml-1 text-[11px] text-muted">
-                      {t.members.find((m) => m.status === "active")?.name ?? (t.status === "completed" ? t.members[2]?.name : "—")}
-                    </span>
-                  </div>
-                )}
+                    );
+                  })}
+                  <span className="ml-1 text-[11px] text-muted">
+                    {t.solved_count} solved{t.solved_count > 0 ? ` · +${t.score} pts` : ""}
+                  </span>
+                </div>
               </div>
             );
           })}
@@ -129,10 +136,11 @@ export default function LiveMonitorPage() {
       )}
 
       <div className="mt-6 rounded-xl border border-line bg-soft p-4 text-xs text-muted">
-        <p className="font-medium text-text">How the relay state works</p>
+        <p className="font-medium text-text">How the round state works</p>
         <p className="mt-1">
-          Timers are server-authoritative. A refresh or disconnect never resets the clock — when a member's window
-          expires, the backend activates the next eligible member automatically. This screen simply renders that state.
+          Timers are server-authoritative and shared across all three dealt problems. A refresh or disconnect never resets
+          the clock — when the deadline passes, the backend marks the session expired and rejects further work.
+          This screen simply renders that state.
         </p>
       </div>
     </div>

@@ -36,7 +36,7 @@ export default function PublicLayout() {
               Round 1
             </NavLink>
             <NavLink
-              to="/team"
+              to="/round2"
               className={({ isActive }) =>
                 `rounded-lg px-3 py-2 transition-colors ${isActive ? "text-text" : "text-muted hover:text-text"}`
               }

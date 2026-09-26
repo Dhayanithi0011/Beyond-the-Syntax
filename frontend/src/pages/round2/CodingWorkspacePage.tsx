@@ -14,12 +14,21 @@ const LANGUAGES = ["c", "cpp", "java", "python"] as const;
 type Language = (typeof LANGUAGES)[number];
 const LANG_FULL: Record<Language, string> = { c: "C", cpp: "C++", java: "Java", python: "Python" };
 
-type ProblemMeta = { id: string; title: string; position: number; q_number?: number; domain?: string; max_score: number; solved: boolean; score: number; unlocked: boolean };
+const ROUND2_GUARD_CODES = new Set([
+  "ROUND2_NOT_STARTED",
+  "ROUND2_EXPIRED",
+  "ROUND2_COMPLETED",
+  "ROUND2_NOT_ACTIVE",
+  "SESSION_EXPIRED",
+]);
+
+type ProblemMeta = { id: string; title: string; position: number; q_number?: number; domain?: string; difficulty?: string; max_score: number; solved: boolean; score: number; unlocked: boolean };
 type ProblemDetail = {
   id: string;
   title: string;
   position: number;
   domain?: string;
+  difficulty?: string;
   max_score: number;
   statement_md: string;
   constraints_md: string;
@@ -29,12 +38,11 @@ type ProblemDetail = {
   direct_cases: { input: string; expected_output: string }[];
   test_cases: { input: string; expected_output: string }[];
 };
-type TeamMemberRow = { member_number: number; name: string; participant_code: string };
-type TeamBrief = { name: string; color: string; icon: string; your_member_number: number; current_member_number?: number | null; members: TeamMemberRow[] };
+type SessionInfo = { status: string; started_at: string | null; deadline: string | null; time_remaining_seconds: number | null; current_index: number; total_questions: number };
+type ParticipantBrief = { name?: string; participant_code?: string };
 type Draft = { language: Language; source_code: string };
-type SetInfo = { id: string; topic: string; set_number?: number; total_sets?: number; round?: number };
 type RunResult = { status: string; stdout: string; stderr: string; execution_time_ms: number; memory_kb: number; judge?: "real" | "simulated"; cases?: { label: string; input: string; expected: string; actual: string; passed: boolean }[] };
-type SubmitResult = { status: string; execution_time_ms: number; memory_kb: number; score: number; passed: number; total: number; judge?: "real" | "simulated" };
+type SubmitResult = { status: string; execution_time_ms: number; memory_kb: number; score: number; passed: number; total: number; judge?: "real" | "simulated"; completed?: boolean; current_index?: number };
 type Submission = { id: string; problem_id: string; problem_title: string; language: string; status: string; execution_time_ms: number; memory_kb: number; score: number; submitted_at: string };
 
 const fmtMB = (kb: number) => (kb / 1024).toFixed(1);
@@ -44,7 +52,8 @@ export default function CodingWorkspacePage() {
   const toast = useToast();
 
   const [problems, setProblems] = useState<ProblemMeta[]>([]);
-  const [setInfo, setSetInfo] = useState<SetInfo | null>(null);
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [participant, setParticipant] = useState<ParticipantBrief | null>(null);
   const [activeId, setActiveId] = useState<string>("");
   const [detail, setDetail] = useState<ProblemDetail | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Partial<Record<Language, string>>>>({});
@@ -57,11 +66,6 @@ export default function CodingWorkspacePage() {
   const [submitting, setSubmitting] = useState(false);
   const [console, setConsole] = useState<{ kind: "run" | "submit"; result: RunResult | SubmitResult } | null>(null);
 
-  const [memberDeadline, setMemberDeadline] = useState<Date | null>(null);
-  const [memberStartedAt, setMemberStartedAt] = useState<Date | null>(null);
-  const [teamTimeRemainingSeconds, setTeamTimeRemainingSeconds] = useState<number | null>(null);
-  const [team, setTeam] = useState<TeamBrief | null>(null);
-  const [handoffOpen, setHandoffOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -72,20 +76,54 @@ export default function CodingWorkspacePage() {
   const currentSource = (activeId && drafts[activeId]?.[currentLang]) || "";
   const current: Draft = { language: currentLang, source_code: currentSource };
 
+  /* Locked questions redirect back to the lobby */
+  const leaveToLobby = useCallback((message: string) => {
+    toast.error(message);
+    setTimeout(() => (window.location.href = "/round2"), 1500);
+  }, [toast]);
+
+  const guardErr = useCallback(
+    (err: { code?: string; message?: string }) => {
+      if (err.code && ROUND2_GUARD_CODES.has(err.code)) {
+        leaveToLobby(
+          err.code === "ROUND2_EXPIRED" || err.code === "SESSION_EXPIRED"
+            ? "Round 2 time has ended."
+            : err.code === "ROUND2_COMPLETED"
+              ? "You already completed Round 2."
+              : err.code === "ROUND2_NOT_STARTED"
+                ? "Round 2 has not started yet."
+                : "Round 2 is not running right now — returning to the Round 2 page."
+        );
+        return true;
+      }
+      if (err.code === "LOCKED") {
+        toast.error("Locked — you must submit the earlier question first.");
+        return true;
+      }
+      return false;
+    },
+    [leaveToLobby, toast]
+  );
+
   const loadProblem = useCallback(async (id: string) => {
-    const { data } = await api.get(`/coding/problems/${id}`);
-    setDetail(data.problem);
-    setActiveId(id);
-    setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...(data.draft.languages ?? {}) } }));
-    setActiveLangs((prev) => ({ ...prev, [id]: data.draft.language ?? "python" }));
-    setConsole(null);
-  }, []);
+    try {
+      const { data } = await api.get(`/coding/problems/${id}`);
+      setDetail(data.problem);
+      setActiveId(id);
+      setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...(data.draft.languages ?? {}) } }));
+      setActiveLangs((prev) => ({ ...prev, [id]: data.draft.language ?? "python" }));
+      setConsole(null);
+    } catch (e) {
+      guardErr(e as { code?: string; message?: string });
+    }
+  }, [guardErr]);
 
   const refreshProblems = useCallback(async () => {
     try {
       const { data } = await api.get("/coding/problems");
       setProblems(data.problems);
-      setSetInfo(data.set ?? null);
+      if (data.session) setSession(data.session);
+      if (data.participant) setParticipant(data.participant);
     } catch {
       /* non-critical refresh — keep the current list */
     }
@@ -93,18 +131,20 @@ export default function CodingWorkspacePage() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await api.get("/coding/problems");
-      setProblems(data.problems);
-      setSetInfo(data.set ?? null);
-      setTeam(data.team ?? null);
-      if (data.session?.member_deadline) setMemberDeadline(new Date(data.session.member_deadline));
-      if (data.session?.member_started_at) setMemberStartedAt(new Date(data.session.member_started_at));
-      if (data.session?.team_time_remaining_seconds != null) setTeamTimeRemainingSeconds(data.session.team_time_remaining_seconds);
-      const first = data.problems?.find((p: ProblemMeta) => p.unlocked) ?? data.problems?.[0];
-      if (first) loadProblem(first.id);
+      try {
+        const { data } = await api.get("/coding/problems");
+        setProblems(data.problems);
+        setSession(data.session ?? null);
+        setParticipant(data.participant ?? null);
+        const idx = Math.max(0, data.session?.current_index ?? 0);
+        const first = data.problems?.find((p: ProblemMeta) => p.unlocked) ?? data.problems?.[idx] ?? data.problems?.[0];
+        if (first) loadProblem(first.id);
+      } catch (e) {
+        guardErr(e as { code?: string; message?: string });
+      }
     })();
     api.get("/coding/submissions").then(({ data }) => setSubmissions(data.submissions)).catch(() => {});
-  }, [loadProblem]);
+  }, [loadProblem, guardErr]);
 
   const persist = useCallback(
     async (problemId: string, draft: Draft): Promise<boolean> => {
@@ -114,12 +154,13 @@ export default function CodingWorkspacePage() {
         setSaveState("saved");
         setLastSaved(new Date().toISOString());
         return true;
-      } catch {
+      } catch (e) {
+        guardErr(e as { code?: string; message?: string });
         setSaveState("error");
         return false;
       }
     },
-    []
+    [guardErr]
   );
 
   const onCodeChange = (value?: string) => {
@@ -144,7 +185,7 @@ export default function CodingWorkspacePage() {
     if (!activeId) return;
     const ok = await persist(activeId, current);
     if (ok) toast.success("Code saved");
-    else toast.error("Could not save — check your connection and try again.");
+    else if (saveState === "error") toast.error("Could not save — check your connection and try again.");
   };
 
   const runCode = async () => {
@@ -173,12 +214,7 @@ export default function CodingWorkspacePage() {
       }
     } catch (e) {
       const err = e as { code?: string; message?: string };
-      if (err.code === "NOT_YOUR_TURN" || err.code === "SESSION_EXPIRED") {
-        toast.error("Your turn in the relay has ended — returning to the team page.");
-        setTimeout(() => (window.location.href = "/team"), 1500);
-      } else {
-        toast.error(err.message || "Run failed — are you still connected?");
-      }
+      if (!guardErr(err)) toast.error(err.message || "Run failed — are you still connected?");
     } finally {
       setRunning(false);
     }
@@ -212,28 +248,19 @@ export default function CodingWorkspacePage() {
       toast[r.status === "accepted" ? "success" : "error"](
         r.status === "accepted" ? `Accepted — ${r.passed}/${r.total} hidden tests passed, +${r.score} pts.` : `Not accepted yet — ${r.status.replace("_", " ")}.`
       );
-      if (r.status === "accepted") refreshProblems();
+      if (r.status === "accepted") {
+        refreshProblems();
+        if (r.completed) {
+          setTimeout(() => {
+            window.location.href = "/round2";
+          }, 1800);
+        }
+      }
     } catch (e) {
       const err = e as { code?: string; message?: string };
-      if (err.code === "NOT_YOUR_TURN" || err.code === "SESSION_EXPIRED") {
-        toast.error("Your turn in the relay has ended — returning to the team page.");
-        setTimeout(() => (window.location.href = "/team"), 1500);
-      } else {
-        toast.error(err.message || "Submission failed — try again.");
-      }
+      if (!guardErr(err)) toast.error(err.message || "Submission failed — try again.");
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const doHandoff = async () => {
-    setHandoffOpen(false);
-    try {
-      const { data } = await api.post("/teams/mine/handoff", {});
-      toast.success(data.message ?? "Handoff successful");
-      setTimeout(() => (window.location.href = "/team"), 900);
-    } catch {
-      toast.error("Handoff rejected by the server.");
     }
   };
 
@@ -243,70 +270,52 @@ export default function CodingWorkspacePage() {
     try {
       const { data } = await api.post("/coding/complete", {});
       toast.success(data.message ?? "Round 2 complete");
-      setTimeout(() => (window.location.href = "/team"), 1200);
-    } catch {
-      toast.error("Could not close the round right now — try again.");
+      setTimeout(() => (window.location.href = "/round2"), 1200);
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      if (!guardErr(err)) toast.error("Could not close the round right now — try again.");
       setCompleting(false);
     }
   };
 
-  /* Server-authoritative countdowns. useCountdown ticks every 250 ms so the
-     member clock never freezes mid-turn. The Team time is a BUDGET, not an
-     absolute deadline: it only ticks while the current member is mid-turn and
-     freezes the moment they hand off (usage is accrued server-side on handoff,
-     so the static snapshot from the payload stays honest). */
-  const { ms: memberMs, label: memberLabel, expired: memberExpired } = useCountdown(memberDeadline);
+  /* Single shared deadline for all 3 dealt problems — server-authoritative. */
+  const { ms: deadlineMs, label: deadlineLabel, expired: deadlineExpired } = useCountdown(session?.deadline ?? null);
 
-  /* Own 250 ms ticker for the team budget, which must run even when the
-     member clock isn't (idle/paused periods between turns). */
-  const [teamNow, setTeamNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setTeamNow(Date.now()), 250);
-    return () => clearInterval(id);
-  }, []);
-
-  const memberTurnOn = !!(memberStartedAt && memberDeadline && teamNow < memberDeadline.getTime());
-  const teamBaseMs = teamTimeRemainingSeconds != null ? teamTimeRemainingSeconds * 1000 : null;
-  const teamRemainingMs = teamBaseMs != null
-    ? Math.max(teamBaseMs - (memberTurnOn && memberStartedAt ? teamNow - memberStartedAt.getTime() : 0), 0)
-    : null;
-  const teamLabel = teamRemainingMs != null
-    ? `${String(Math.floor(teamRemainingMs / 60000)).padStart(2, "0")}:${String(Math.floor((teamRemainingMs % 60000) / 1000)).padStart(2, "0")}`
-    : "—";
-
-  /* Member-session expiry → hand the baton automatically. */
-  useEffect(() => {
-    if (memberDeadline == null) return;
-    if (memberMs <= 0) {
-      toast.warning("Your session has expired — handing off to the next member.");
-      setTimeout(() => (window.location.href = "/team"), 1500);
-    } else if (memberMs <= 30_000 && !warnedRef.current.crit) {
+    if (session?.deadline == null) return;
+    if (deadlineMs <= 0) {
+      toast.warning("Time is up — Round 2 has ended for you.");
+      setTimeout(() => (window.location.href = "/round2"), 1500);
+    } else if (deadlineMs <= 60_000 && !warnedRef.current.crit) {
       warnedRef.current.crit = true;
-      toast.warning("30 seconds left — final warning.");
-    } else if (memberMs <= 120_000 && !warnedRef.current.warn) {
+      toast.warning("60 seconds left — final warning.");
+    } else if (deadlineMs <= 120_000 && !warnedRef.current.warn) {
       warnedRef.current.warn = true;
       toast.warning("2 minutes remaining.");
     }
-  }, [memberMs, memberDeadline, toast]);
+  }, [deadlineMs, session?.deadline, toast]);
 
-  const activeMember = team?.current_member_number ?? 0;
-  const activeMemberName = team?.members.find((m) => m.member_number === activeMember)?.name;
-  const nextMemberNumber = team && team.members.length > 0 ? (activeMember === team.members.length ? 1 : activeMember + 1) : 0;
-  const nextMemberName = team?.members.find((m) => m.member_number === nextMemberNumber)?.name;
+  const openCount = problems.filter((p) => p.solved).length;
+  const openLabel = session ? `${session.current_index}/${(session.total_questions || problems.length || 3)} solved` : `${openCount} solved`;
+  const headerName = participant?.name ?? "Participant";
+  const headerCode = participant?.participant_code ? ` · ${participant.participant_code}` : "";
 
   return (
     <div className="flex h-screen flex-col">
       {/* Header */}
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line bg-surface/60 px-4 py-2.5">
-        <Link to="/team" className="flex items-center gap-2">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary/15 text-sm text-primary">⚡</span>
-          <span className="text-sm font-semibold">{team?.name ?? "Loading team…"}</span>
+        <Link to="/round2" className="flex items-center gap-2">
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary/15 text-sm text-primary">{"</>"}</span>
+          <span className="text-sm font-semibold">{session?.status === "active" ? "Round 2 — Coding Sprint" : "Round 2"}</span>
         </Link>
         <Badge tone="success" className="hidden sm:inline-flex">
-          ● Member {team?.current_member_number ?? activeMember} active
+          ● {openLabel}
         </Badge>
-
-        <div className="mx-2 hidden h-6 w-px bg-soft sm:block" />
+        <span className="mx-2 hidden h-6 w-px bg-soft sm:block" />
+        <span className="hidden max-w-40 truncate text-xs text-muted sm:inline">
+          {headerName}
+          {headerCode}
+        </span>
 
         <span className="text-xs text-muted">
           {saveState === "error"
@@ -329,23 +338,13 @@ export default function CodingWorkspacePage() {
           >
             ⛶
           </button>
-          <div className="ml-2 flex items-center gap-4">
-            <div className="text-right">
-              <p className="text-[10px] uppercase tracking-wider text-muted">Team time</p>
-              {teamRemainingMs != null ? (
-                <p className={`font-mono text-base font-semibold tabular-nums ${teamRemainingMs <= 0 ? "text-danger animate-pulse" : "text-muted"}`}>{teamLabel}</p>
-              ) : (
-                <p className="font-mono text-base font-semibold text-muted">—</p>
-              )}
-            </div>
-            <div className="text-right">
-              <p className="text-[10px] uppercase tracking-wider text-muted">Your turn</p>
-              {memberDeadline ? (
-                <p className={`font-mono text-lg font-semibold tabular-nums ${memberExpired ? "text-danger animate-pulse" : "text-text"}`}>{memberLabel}</p>
-              ) : (
-                <p className="font-mono text-lg font-semibold text-muted">Starting…</p>
-              )}
-            </div>
+          <div className="ml-2 text-right">
+            <p className="text-[10px] uppercase tracking-wider text-muted">Shared timer · all 3 problems</p>
+            {session?.deadline ? (
+              <p className={`font-mono text-lg font-semibold tabular-nums ${deadlineExpired ? "text-danger animate-pulse" : "text-text"}`}>{deadlineLabel}</p>
+            ) : (
+              <p className="font-mono text-lg font-semibold text-muted">—</p>
+            )}
           </div>
         </div>
       </header>
@@ -355,11 +354,7 @@ export default function CodingWorkspacePage() {
         <aside className="shrink-0 overflow-x-auto border-b border-line bg-surface/40 lg:w-56 lg:overflow-y-auto lg:border-b-0 lg:border-r">
           <div className="p-3">
             <p className="mb-2 px-1 text-[11px] font-medium uppercase tracking-wider text-muted">
-              {setInfo?.round && setInfo?.set_number ? (
-                <>Round {setInfo.round} · Set {setInfo.set_number} of {setInfo.total_sets}</>
-              ) : (
-                "Problems"
-              )}
+              Your dealt problems · Q1 → Q{(session?.total_questions ?? problems.length) || 3}
             </p>
             <div className="flex gap-2 lg:flex-col lg:gap-1.5">
               {problems.map((p) => {
@@ -368,7 +363,7 @@ export default function CodingWorkspacePage() {
                   <button
                     key={p.id}
                     disabled={locked}
-                    title={locked ? "Locked — complete earlier questions to open this one." : "Open problem"}
+                    title={locked ? "Locked — submit the earlier question to open this one." : "Open problem"}
                     onClick={() => loadProblem(p.id)}
                     className={`flex min-w-max items-center gap-2 rounded-lg px-3 py-2.5 text-left transition-colors lg:min-w-0 ${
                       p.id === activeId
@@ -382,14 +377,15 @@ export default function CodingWorkspacePage() {
                     <span className={`text-sm font-medium ${p.solved ? "text-success line-through decoration-success" : ""}`}>
                       {p.solved ? "✓ " : ""}Q{p.q_number ?? p.position}· {p.title} {locked ? "🔒" : ""}
                     </span>
+                    {p.difficulty && <span className="ml-auto rounded border border-line bg-soft px-1 text-[10px] text-muted">{p.difficulty}</span>}
                     {p.score > 0 && <span className="ml-auto font-mono text-xs text-success">{p.score}</span>}
                   </button>
                 );
               })}
             </div>
             <div className="mt-4 hidden rounded-lg border border-line bg-soft p-3 text-xs text-muted lg:block">
-              <p>Questions unlock in order as your team solves them — the next member's turn opens the next question where the previous member left off.</p>
-              <p className="mt-2">The team's shared code, test history and time persist across every handoff.</p>
+              <p>The three dealt problems open in strict order — Q1 first, then Q2 after an accepted Q1, then Q3.</p>
+              <p className="mt-2">Submitting locks a question permanently: no re-editing or re-submitting after acceptance. The single shared timer covers all three.</p>
             </div>
           </div>
         </aside>
@@ -406,7 +402,8 @@ export default function CodingWorkspacePage() {
             {detail ? (
               <div className="max-w-prose animate-fade-in">
                 <div className="mb-4 flex flex-wrap items-center gap-2">
-                  {setInfo?.set_number && <Badge tone="primary">Set {setInfo.set_number} · Q{(detail.position - 1) % 3 + 1}</Badge>}
+                  <Badge tone="primary">Q{detail.position}</Badge>
+                  {detail.difficulty && <Badge tone={detail.difficulty === "hard" ? "danger" : detail.difficulty === "medium" ? "warning" : "muted"}>{detail.difficulty}</Badge>}
                   {detail.domain && <Badge tone="muted">{detail.domain}</Badge>}
                   <span className="ml-auto flex gap-3 text-xs text-muted">
                     <span>⏱ {detail.time_limit_ms} ms</span>
@@ -551,40 +548,11 @@ export default function CodingWorkspacePage() {
             {submitting ? "Submitting…" : "Submit"}
           </button>
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
-          {team && activeMember < team.members.length ? (
-            <button className="btn-secondary border-warning/30 text-warning hover:bg-warning/10 text-xs" onClick={() => setHandoffOpen(true)}>
-              ⟳ Hand Off to Next Member
-            </button>
-          ) : (
-            <span className="text-[11px] font-medium uppercase tracking-wider text-warning">Final member — no handoff</span>
-          )}
           <button className="btn-secondary border-danger/30 text-danger hover:bg-danger/10 text-xs" onClick={() => setCompleteOpen(true)} disabled={completing}>
             {completing ? "Closing round…" : "Finish Round 2 Early"}
           </button>
         </div>
       </footer>
-
-      {/* Handoff confirm */}
-      <Modal
-        open={handoffOpen}
-        onClose={() => setHandoffOpen(false)}
-        title="Hand off the baton?"
-        footer={
-          <>
-            <button className="btn-secondary" onClick={() => setHandoffOpen(false)}>Keep coding</button>
-            <button className="btn-primary" onClick={doHandoff}>Confirm handoff</button>
-          </>
-        }
-      >
-        <p className="text-sm">
-          Your saved code, test history and the team's remaining time pass to{" "}
-          <span className="font-medium text-text">
-            Member {nextMemberNumber || "?"}
-            {nextMemberName ? ` (${nextMemberName})` : ""}
-          </span>.
-        </p>
-        <p className="mt-2 text-sm text-muted">You will lose editor access and cannot reclaim the turn.</p>
-      </Modal>
 
       {/* Early completion confirm */}
       <Modal
@@ -599,10 +567,10 @@ export default function CodingWorkspacePage() {
         }
       >
         <p className="text-sm">
-          This <span className="font-medium text-text">ends Round 2 for the whole team immediately</span> — your solved
-          problems and scores are locked in, and no member will get any more time.
+          This <span className="font-medium text-text">ends Round 2 for you right now</span> — your solved problems and
+          scores are locked in, and you cannot come back for more time.
         </p>
-        <p className="mt-2 text-sm text-muted">Any time left in the relay is discarded. There is no undo.</p>
+        <p className="mt-2 text-sm text-muted">Time left on the shared timer is discarded. There is no undo.</p>
       </Modal>
 
       {/* Submissions */}
@@ -626,7 +594,7 @@ export default function CodingWorkspacePage() {
         )}
       </Modal>
 
-      <TabSwitchWatcher context="the Round 2 coding relay" notifyUrl="/coding/tab-switch" />
+      <TabSwitchWatcher context="the Round 2 coding sprint" notifyUrl="/coding/tab-switch" />
     </div>
   );
 }
@@ -726,6 +694,7 @@ function SubmitConsole({ result }: { result: SubmitResult }) {
         {result.passed}/{result.total} hidden test cases passed · {result.execution_time_ms} ms · {fmtMB(result.memory_kb)} MB ·{" "}
         <span className="font-semibold text-primary">+{result.score} pts</span>
       </p>
+      {ok && result.completed && <p className="mt-1 text-xs text-success">✓ That was your final problem — Round 2 complete!</p>}
     </div>
   );
 }

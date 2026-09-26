@@ -1,8 +1,8 @@
 """Shared API error type.
 
 Defined outside `app.core.security` because `security` and `services` depend
-on each other (security guards call relay_service.sync_team_session_state,
-relay_service raises AuthError) — a dedicated module avoids the import cycle.
+on each other (security guards call round2_service.sync_session_state, which
+raises AuthError) — a dedicated module avoids the import cycle.
 """
 from fastapi import HTTPException, status
 

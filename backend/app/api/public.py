@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.errors import AuthError
-from app.models.models import CodingProblem, Competition, Participant, Question, Team, TeamSession
+from app.models.models import CodingProblem, Competition, Participant, Question, Round2Session
 
 router = APIRouter(tags=["public"])
 
@@ -46,9 +46,10 @@ async def get_competition(db: AsyncSession = Depends(get_db)):
         or 0
     )
 
-    team_ids = select(Team.id).where(Team.competition_id == comp.id)
     round2_ends_at = await db.scalar(
-        select(func.max(TeamSession.team_deadline)).where(TeamSession.team_id.in_(team_ids))
+        select(func.max(Round2Session.deadline)).where(
+            Round2Session.competition_id == comp.id, Round2Session.deadline.isnot(None)
+        )
     )
 
     return {
@@ -91,22 +92,24 @@ async def get_rules():
                 ),
             },
             {
-                "title": "Round 2 — Coding Relay",
+                "title": "Round 2 — Individual Coding Sprint",
                 "body": (
-                    "Qualified participants form teams of 3. The team shares a fixed 45 minutes — "
-                    "a 15-minute turn for each member, in relay order. A member's clock starts only "
-                    "when they enter the workspace and pauses in between turns. There is no time bank: "
-                    "any time left unused in a turn is discarded, so the team's remaining time steps "
-                    "down 45 → 30 → 15 as each turn is used. The final member cannot hand off. Teams "
-                    "that finish their work early may close the round ahead of time."
+                    "Qualified participants compete individually. Each participant is dealt 3 coding "
+                    "problems and has one fixed total time budget (45 minutes) shared across all three, "
+                    "solved in strict order — Q1 first, then Q2, then Q3. Solving a question submits it "
+                    "and unlocks the next; you can revisit a solved question's code history but not re-submit "
+                    "outside the order. There are no teams, no turns and no handoffs. The timer starts for "
+                    "everyone at once when the organizers launch the round and ends at a single shared "
+                    "deadline. Finishing early ends your round immediately."
                 ),
             },
             {
                 "title": "Fair Play",
                 "body": (
-                    "Collaboration is strictly within your own team and only during your own turn. "
-                    "Switching tabs, exiting fullscreen and other suspicious activity is recorded and "
-                    "reviewed by the committee. All grading decisions by the committee are final."
+                    "The coding round is strictly individual — collaboration with anyone else is "
+                    "disqualifying. Switching tabs, exiting fullscreen and other suspicious activity is "
+                    "recorded and reviewed by the committee. All grading decisions by the committee are "
+                    "final."
                 ),
             },
         ]

@@ -1,14 +1,18 @@
 """
-Coding workspace endpoints. `run` executes against the visible test cases
-(samples + direct self-check cases) and returns output directly to the team;
-`submit` executes against hidden test cases and only ever returns a verdict +
-score, never the hidden expected output. All code execution is delegated to the
-execution service — nothing here ever calls a compiler/interpreter in-process.
+Coding workspace endpoints (individual Round 2).
 
-Every route depends on `require_active_team_member`, which resolves the
-caller's team from their own membership row and confirms it is currently
-their turn (see core/security.py) — no team_id/member_id is ever accepted
-from the client here.
+Every participant is dealt QUESTION_COUNT problems (Q1..Q3 in strict order)
+and works under ONE shared total timer. `run` executes against the visible
+test cases (samples + direct self-check cases) and returns output directly to
+the participant; `submit` executes against hidden test cases and only ever
+returns a verdict + score, never the hidden expected output. All code
+execution is delegated to the execution service — nothing here ever calls a
+compiler/interpreter in-process.
+
+Every route depends on `require_round2_session`, which resolves the caller's
+individual session from their own participant row and confirms the round is
+open and the shared deadline hasn't passed (see core/security.py) — no
+participant_id/problem_id is ever accepted from the client here.
 """
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
@@ -18,98 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.errors import AuthError
-from app.core.security import require_active_team_member, require_participant
-from app.models.models import CodingProblem, Competition, TestCase, CodeDraft, Submission, TeamSession, SessionStatus, TeamMember, Participant, User
+from app.core.security import require_participant, require_round2_session
+from app.models.models import CodingProblem, TestCase, CodeDraft, Submission, Round2Session
+from app.services import round2_service
 from app.services.execution_client import execute_job
-from app.services.relay_service import ensure_member_clock, team_time_remaining, complete_team_round
 
 router = APIRouter(prefix="/coding", tags=["coding"])
 
-SET_SIZE = 3  # questions per set in the Round 2 bank
-
-
-def _set_index_of_position(position: int) -> int:
-    return (position - 1) // SET_SIZE
-
-
-def _num_sets(problems: list) -> int:
-    return max((p.position for p in problems), default=SET_SIZE) // SET_SIZE or 1
-
-
-def _current_set_index(problems: list, session: TeamSession | None) -> int:
-    start = (session.start_set_index if session and session.start_set_index is not None else 0) % _num_sets(problems)
-    rounds = session.completed_rounds if session and session.completed_rounds else 0
-    return (start + rounds) % _num_sets(problems)
-
-
-def _problems_of_set(problems: list, idx: int) -> list:
-    return [p for p in problems if _set_index_of_position(p.position) == idx]
-
-
-async def _load_session_and_current_set(db: AsyncSession, membership) -> tuple:
-    session = await db.scalar(select(TeamSession).where(TeamSession.team_id == membership.team_id))
-    problems = (
-        await db.scalars(
-            select(CodingProblem)
-            .where(CodingProblem.competition_id == membership.team.competition_id)
-            .order_by(CodingProblem.position)
-        )
-    ).all()
-    idx = _current_set_index(problems, session)
-    return session, idx, _problems_of_set(problems, idx)
-
-
-async def _assert_in_current_set(db: AsyncSession, membership, problem: CodingProblem) -> None:
-    """Round-2 access rule: a team may only work the ONE set it has been dealt
-    for the current relay round, and only questions whose turn on the
-    progressive unlock is reached. Solvers can't open tomorrow's questions
-    early — the set advances round-robin only after every member has taken a
-    turn, and within a set each member opens one more question while solving
-    the previous question unlocks the next one."""
-    if problem is None:
-        raise AuthError("NOT_FOUND", "Problem not found.", 404)
-    session, _, current = await _load_session_and_current_set(db, membership)
-    if str(problem.id) not in {str(p.id) for p in current}:
-        raise AuthError("FORBIDDEN", "That question isn't part of your team's current set.")
-    solved_map = await _solved_map(db, membership.team_id, [p.id for p in current])
-    if not _is_unlocked(session, current, problem, solved_map):
-        raise AuthError(
-            "FORBIDDEN",
-            "This question is locked — finish the previous question in this set first; "
-            "the later member's turn also opens more questions.",
-        )
-
-
-async def _solved_map(db: AsyncSession, team_id, problem_ids: list) -> dict:
-    """{problem_id: best_score} for the given problems — score > 0 means the
-    team has an accepted submission on it."""
-    return {
-        str(pid): score
-        for pid, score in (
-            await db.execute(
-                select(Submission.problem_id, func.max(Submission.score))
-                .where(Submission.team_id == team_id, Submission.problem_id.in_(list(problem_ids)))
-                .group_by(Submission.problem_id)
-            )
-        ).all()
-    }
-
-
-def _is_unlocked(session, current: list, problem, solved_map: dict) -> bool:
-    """Progressive unlock inside the current set (1..3), where the number of
-    open questions is max(current member's turn, solved questions + 1):
-    - Member 1 starts with Q1 open; solving Q1 opens Q2, solving Q2 opens Q3.
-    - Member 2 always has at least Q1+Q2 open (continuation), and so on, so a
-      member who couldn't finish Q1 leaves it — and the next one more —
-      open for the next member, with the previous code intact.
-    - Member 3 opens the whole set from the start."""
-    member_number = session.current_member_number if session and session.current_member_number else 1
-    q_number = (problem.position - 1) % SET_SIZE + 1
-    solved_before = sum(
-        1 for p in current
-        if p.position < problem.position and solved_map.get(str(p.id), 0) > 0
-    )
-    return q_number <= max(member_number, solved_before + 1)
+QUESTION_COUNT = round2_service.QUESTIONS_PER_PARTICIPANT
 
 
 def _norm(s: str) -> str:
@@ -126,100 +46,104 @@ def _first_failure_status(result) -> str:
     return "wrong_answer"
 
 
-def _session_payload(sess: TeamSession | None, team_remaining_seconds: int = 0) -> dict | None:
-    if sess is None:
-        return None
+async def _dealt_problems(db: AsyncSession, session: Round2Session) -> list[CodingProblem]:
+    order = round2_service.dealt_problem_ids(session)
+    if not order:
+        return []
+    rows = (await db.scalars(
+        select(CodingProblem).where(CodingProblem.id.in_(order))
+    )).all()
+    by_id = {str(p.id): p for p in rows}
+    return [by_id[pid] for pid in order if pid in by_id]
+
+
+def _is_unlocked(session: Round2Session, problem: CodingProblem, dealt: list) -> bool:
+    index = next(i for i, p in enumerate(dealt) if str(p.id) == str(problem.id))
+    return index <= session.current_index
+
+
+def _assert_current_problem(db: AsyncSession, session: Round2Session, problem: CodingProblem | None) -> None:
+    """Strict-order gate: a participant may only interact with the ONE problem
+    whose turn it currently is (Q1 first; submitting Q1 unlocks Q2, etc.). No
+    skipping ahead, no re-opening finished questions for edits."""
+    if problem is None:
+        raise AuthError("NOT_FOUND", "Problem not found.", 404)
+    dealt = round2_service.dealt_problem_ids(session)
+    if str(problem.id) not in dealt:
+        raise AuthError("FORBIDDEN", "That question isn't part of your dealt Round 2 set.")
+    if str(problem.id) != round2_service.current_problem_id(session):
+        raise AuthError(
+            "LOCKED",
+            "This question is locked — finish the current question first (strict order Q1 → Q2 → Q3).",
+        )
+
+
+async def _solved_map(db: AsyncSession, participant_id, problem_ids: list) -> dict:
+    """{problem_id: best_score} for the given problems — score > 0 means the
+    participant has an accepted submission on it."""
     return {
-        "status": sess.status,
-        "team_started_at": sess.team_started_at.isoformat() if sess.team_started_at else None,
-        "team_time_remaining_seconds": team_remaining_seconds,
-        "current_member_number": sess.current_member_number,
-        "member_started_at": sess.member_started_at.isoformat() if sess.member_started_at else None,
-        "member_deadline": sess.member_deadline.isoformat() if sess.member_deadline else None,
+        str(pid): score
+        for pid, score in (
+            await db.execute(
+                select(Submission.problem_id, func.max(Submission.score))
+                .where(
+                    Submission.participant_id == participant_id,
+                    Submission.problem_id.in_(list(problem_ids)),
+                )
+                .group_by(Submission.problem_id)
+            )
+        ).all()
     }
 
 
-async def _team_brief(db: AsyncSession, membership, session: TeamSession | None) -> dict:
-    """Small team identity block so the workspace can render the real team name,
-    the member roster and whose turn it is without a second round-trip."""
-    members = (
-        await db.execute(
-            select(TeamMember, Participant, User)
-            .join(Participant, Participant.id == TeamMember.participant_id)
-            .join(User, User.id == Participant.user_id)
-            .where(TeamMember.team_id == membership.team_id)
-            .order_by(TeamMember.member_number)
-        )
-    ).all()
+def _session_payload(session: Round2Session) -> dict:
     return {
-        "name": membership.team.name,
-        "color": membership.team.color or "#6366F1",
-        "icon": "⚡",
-        "your_member_number": membership.member_number,
-        "current_member_number": session.current_member_number if session else None,
-        "members": [
-            {
-                "member_number": tm.member_number,
-                "name": user.name,
-                "participant_code": participant.participant_code,
-            }
-            for tm, participant, user in members
-        ],
+        "status": session.status,
+        "started_at": session.started_at.isoformat() if session.started_at else None,
+        "deadline": session.deadline.isoformat() if session.deadline else None,
+        "time_remaining_seconds": round2_service.time_remaining_seconds(session),
+        "current_index": session.current_index,
+        "total_questions": len(round2_service.dealt_problem_ids(session)),
     }
 
 
 @router.get("/problems")
-async def list_problems(db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)):
-    """Returns ONLY the single set (3 questions) dealt to this team for the
-    current relay round — sets rotate round-robin after every full pass.
-    Entering the workspace starts (once) the CURRENT member's private 15-minute
-    countdown, per the lazy-start relay timing model."""
-    session, idx, current = await _load_session_and_current_set(db, membership)
-    if session is not None:
-        await ensure_member_clock(db, session)
-    competition = await db.get(Competition, membership.team.competition_id)
-    remaining = team_time_remaining(session, competition)
-    problems = (await db.scalars(
-        select(CodingProblem)
-        .where(CodingProblem.competition_id == membership.team.competition_id)
-        .order_by(CodingProblem.position)
-    )).all()
-    num_sets = _num_sets(problems)
-    best = await _solved_map(db, membership.team_id, [p.id for p in current])
+async def list_problems(db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)):
+    """Returns ONLY the 3 questions dealt to this participant (Q1..Q3), with
+    strict-order unlock state, plus the single shared round clock."""
+    dealt = await _dealt_problems(db, session)
+    best = await _solved_map(db, session.participant_id, [p.id for p in dealt])
     return {
-        "set": {
-            "id": "round2",
-            "topic": "Coding Relay",
-            "set_number": idx + 1,
-            "total_sets": num_sets,
-            "round": (session.completed_rounds or 0) + 1,
+        "kind": "round2",
+        "session": _session_payload(session),
+        "participant": {
+            "name": session.participant.user.name if session.participant.user else "",
+            "participant_code": session.participant.participant_code,
         },
-        "session": _session_payload(session, remaining),
-        "team": await _team_brief(db, membership, session),
         "problems": [
             {
                 "id": str(p.id),
                 "title": p.title,
                 "position": p.position,
-                "q_number": (p.position - 1) % SET_SIZE + 1,
+                "q_number": index + 1,
                 "domain": p.domain,
                 "difficulty": p.difficulty,
                 "max_score": p.max_score,
                 "solved": best.get(str(p.id), 0) > 0,
                 "score": best.get(str(p.id), 0),
-                "unlocked": _is_unlocked(session, current, p, best),
+                "unlocked": index <= session.current_index,
             }
-            for p in current
+            for index, p in enumerate(dealt)
         ],
     }
 
 
 @router.get("/problems/{problem_id}")
 async def get_problem(
-    problem_id: str, db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)
+    problem_id: str, db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)
 ):
     problem = await db.get(CodingProblem, problem_id)
-    await _assert_in_current_set(db, membership, problem)
+    _assert_current_problem(db, session, problem)
     samples = (
         await db.scalars(
             select(TestCase).where(
@@ -228,7 +152,9 @@ async def get_problem(
         )
     ).all()
     draft = await db.scalar(
-        select(CodeDraft).where(CodeDraft.team_id == membership.team_id, CodeDraft.problem_id == problem_id)
+        select(CodeDraft).where(
+            CodeDraft.participant_id == session.participant_id, CodeDraft.problem_id == problem_id
+        )
     )
     if draft is None:
         draft_payload = {"language": "python", "languages": {}, "source_code": ""}
@@ -264,35 +190,36 @@ async def get_problem(
 
 @router.post("/save")
 async def save_draft(
-    payload: dict, db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)
+    payload: dict, db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)
 ):
     problem = await db.get(CodingProblem, payload["problem_id"])
-    await _assert_in_current_set(db, membership, problem)
+    _assert_current_problem(db, session, problem)
     draft = await db.scalar(
         select(CodeDraft).where(
-            CodeDraft.team_id == membership.team_id, CodeDraft.problem_id == payload["problem_id"]
+            CodeDraft.participant_id == session.participant_id, CodeDraft.problem_id == payload["problem_id"]
         )
     )
+    now = datetime.now(timezone.utc)
     if draft is None:
-        draft = CodeDraft(team_id=membership.team_id, problem_id=payload["problem_id"])
+        draft = CodeDraft(
+            participant_id=session.participant_id, problem_id=payload["problem_id"], updated_at=now
+        )
         db.add(draft)
     languages = dict(draft.languages or {})
     languages[payload["language"]] = payload["source_code"]
     draft.languages = languages
     draft.language = payload["language"]
     draft.source_code = payload["source_code"]
-    draft.last_edited_by = membership.id
-    draft.updated_at = datetime.now(timezone.utc)  # set in Python so no lazy reload after commit
     await db.commit()
-    return {"saved": True, "saved_at": draft.updated_at.isoformat()}
+    return {"saved": True, "saved_at": now.isoformat()}
 
 
 @router.post("/run")
 async def run_code(
-    payload: dict, db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)
+    payload: dict, db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)
 ):
     problem = await db.get(CodingProblem, payload["problem_id"])
-    await _assert_in_current_set(db, membership, problem)
+    _assert_current_problem(db, session, problem)
     samples = (
         await db.scalars(
             select(TestCase).where(
@@ -342,10 +269,10 @@ async def run_code(
 
 @router.post("/submit")
 async def submit_code(
-    payload: dict, db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)
+    payload: dict, db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)
 ):
     problem = await db.get(CodingProblem, payload["problem_id"])
-    await _assert_in_current_set(db, membership, problem)
+    _assert_current_problem(db, session, problem)
     hidden_cases = (
         await db.scalars(
             select(TestCase).where(TestCase.problem_id == problem.id, TestCase.test_type == "hidden")
@@ -376,9 +303,8 @@ async def submit_code(
 
     score = problem.max_score if verdict == "accepted" else 0
     submission = Submission(
-        team_id=membership.team_id,
+        participant_id=session.participant_id,
         problem_id=problem.id,
-        member_id=membership.id,
         language=payload["language"],
         source_code=payload["source_code"],
         status=verdict,
@@ -388,6 +314,21 @@ async def submit_code(
     )
     db.add(submission)
     await db.commit()
+
+    # Strict order: an accepted-or-not verdict still moves the pointer to the
+    # next dealt question; submitting Q3 completes the session.
+    await round2_service.advance(db, session)
+    await log_action(
+        db,
+        user_id=session.participant.user_id,
+        action="CODING_SUBMIT",
+        metadata={
+            "problem_id": str(problem.id),
+            "problem_title": problem.title,
+            "verdict": verdict,
+            "score": score,
+        },
+    )
     return {
         "submission_id": str(submission.id),
         "status": verdict,
@@ -397,39 +338,34 @@ async def submit_code(
         "execution_time_ms": worst_time,
         "memory_kb": worst_mem,
         "judge": "real",
+        "completed": (session.status == "completed"),
+        "current_index": session.current_index,
     }
 
 
 @router.post("/complete")
-async def complete_round(db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)):
-    """End the team's Round 2 immediately — for teams that finish their work
-    mid-round. Any remaining time is discarded and no further turns can run.
-    Only the currently active member may close the round."""
-    session = await db.scalar(select(TeamSession).where(TeamSession.team_id == membership.team_id))
-    if session is None or session.status != SessionStatus.active:
-        raise AuthError("CONFLICT", "Your team's round is not currently active.", 409)
-    await complete_team_round(db, session)
+async def finish_early(db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)):
+    """End this participant's Round 2 immediately — for solvers who finish
+    their dealt questions mid-round. Any remaining time on the shared clock is
+    discarded and no further questions can be worked."""
+    await round2_service.complete_session(db, session)
     await log_action(
         db,
-        user_id=None,
+        user_id=session.participant.user_id,
         action="ROUND2_COMPLETED",
-        metadata={
-            "team_id": str(membership.team_id),
-            "member_number": membership.member_number,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-        },
+        metadata={"completed_at": datetime.now(timezone.utc).isoformat()},
     )
-    return {"completed": True, "message": "Round 2 complete — your team's share of time ends here."}
+    return {"completed": True, "message": "Round 2 complete — remaining time has ended here."}
 
 
 @router.get("/submissions")
 async def list_submissions(
-    problem_id: str | None = None, db: AsyncSession = Depends(get_db), membership=Depends(require_active_team_member)
+    problem_id: str | None = None, db: AsyncSession = Depends(get_db), session=Depends(require_round2_session)
 ):
     query = (
         select(Submission, CodingProblem)
         .join(CodingProblem, CodingProblem.id == Submission.problem_id)
-        .where(Submission.team_id == membership.team_id)
+        .where(Submission.participant_id == session.participant_id)
         .order_by(Submission.submitted_at.desc())
     )
     if problem_id:
@@ -458,15 +394,14 @@ async def log_tab_switch(
     payload: dict = {},
     db: AsyncSession = Depends(get_db),
     participant=Depends(require_participant),
-    membership=Depends(require_active_team_member),
 ):
     """Anti-cheat marker: fired by the workspace when the browser detects the
     participant left the window/tab. Recorded to the audit trail so an admin
-    can see the team kept straying mid-relay (see docs/ARCHITECTURE.md)."""
+    can see the participant kept straying during Round 2."""
     await log_action(
         db,
         user_id=participant.user_id,
         action="TAB_SWITCH",
         metadata={"where": "coding", "switched_at": payload.get("switched_at")},
     )
-    return {"ok": True, "member_number": membership.member_number}
+    return {"ok": True}
